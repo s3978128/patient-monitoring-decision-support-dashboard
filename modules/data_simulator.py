@@ -9,6 +9,29 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 
+# Lists of common first and last names for patient simulation
+FIRST_NAMES = [
+    'James', 'Mary', 'Robert', 'Patricia', 'Michael', 'Jennifer', 'William', 'Linda',
+    'David', 'Barbara', 'Richard', 'Susan', 'Joseph', 'Jessica', 'Thomas', 'Sarah',
+    'Charles', 'Karen', 'Christopher', 'Nancy', 'Daniel', 'Betty', 'Matthew', 'Margaret',
+    'Anthony', 'Sandra', 'Mark', 'Ashley', 'Donald', 'Kimberly', 'Steven', 'Emily',
+    'Paul', 'Donna', 'Andrew', 'Michelle', 'Joshua', 'Dorothy', 'Kenneth', 'Carol',
+    'Kevin', 'Amanda', 'Brian', 'Melissa', 'Edward', 'Deborah', 'Ronald', 'Stephanie',
+    'Timothy', 'Rebecca', 'Jason', 'Sharon', 'Jeffrey', 'Laura', 'Ryan', 'Cynthia',
+    'Jacob', 'Kathleen', 'Gary', 'Amy', 'Nicholas', 'Shirley', 'Eric', 'Angela'
+]
+
+LAST_NAMES = [
+    'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis',
+    'Rodriguez', 'Martinez', 'Hernandez', 'Lopez', 'Gonzalez', 'Wilson', 'Anderson',
+    'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin', 'Lee', 'Perez', 'Thompson',
+    'White', 'Harris', 'Sanchez', 'Clark', 'Ramirez', 'Lewis', 'Robinson', 'Walker',
+    'Young', 'Allen', 'King', 'Wright', 'Scott', 'Torres', 'Peterson', 'Phillips',
+    'Campbell', 'Parker', 'Edwards', 'Collins', 'Reyes', 'Stewart', 'Morris', 'Morales',
+    'Gutierrez', 'Ortiz', 'Murphy', 'Ojeda', 'Aguilar', 'Medina', 'Velez', 'Cervantes'
+]
+
+
 class PatientDataSimulator:
     """Simulates patient data for CDSS testing and monitoring."""
     
@@ -31,6 +54,17 @@ class PatientDataSimulator:
         self.anomaly_rate = anomaly_rate
         self.severe_error_rate = severe_error_rate
     
+    def _generate_random_name(self) -> str:
+        """
+        Generate a random patient name.
+        
+        Returns:
+            String containing a random first and last name
+        """
+        first_name = np.random.choice(FIRST_NAMES)
+        last_name = np.random.choice(LAST_NAMES)
+        return f"{first_name} {last_name}"
+    
     def generate_patients(self, n_patients: int) -> pd.DataFrame:
         """
         Generate simulated patient records.
@@ -46,6 +80,7 @@ class PatientDataSimulator:
         for i in range(n_patients):
             patient = {
                 'patient_id': f'PAT{i+1:05d}',
+                'name': self._generate_random_name(),
                 'age': np.random.randint(18, 90),
                 'gender': np.random.choice(['M', 'F']),
                 'timestamp': datetime.now() - timedelta(days=np.random.randint(0, 365))
@@ -144,7 +179,8 @@ class PatientDataSimulator:
         self,
         n_patients: int,
         duplicate_rate: float = 0.1,
-        missing_column_rate: float = 0.2,
+        missing_value_rate: float = 0.2,
+        missing_column_rate: Optional[float] = None,
     ) -> pd.DataFrame:
         """
         Generate a full dataset with optional real-world data errors.
@@ -152,11 +188,15 @@ class PatientDataSimulator:
         Args:
             n_patients: Number of base patient records to generate
             duplicate_rate: Fraction of rows to duplicate
-            missing_column_rate: Probability of dropping each non-key column
+            missing_value_rate: Probability of replacing each eligible cell with a missing value
+            missing_column_rate: Backward-compatible alias for missing_value_rate
 
         Returns:
             DataFrame with demographics, vitals, and injected errors
         """
+        if missing_column_rate is not None:
+            missing_value_rate = missing_column_rate
+
         patients_df = self.generate_patients(n_patients=n_patients)
 
         vital_signs_list = []
@@ -167,7 +207,7 @@ class PatientDataSimulator:
         full_df = patients_df.merge(vitals_df, on='patient_id')
 
         full_df = self._inject_duplicates(full_df, duplicate_rate)
-        full_df = self._drop_random_columns(full_df, missing_column_rate)
+        full_df = self._inject_missing_values(full_df, missing_value_rate)
 
         return full_df.reset_index(drop=True)
 
@@ -183,25 +223,31 @@ class PatientDataSimulator:
         duplicate_rows = df.sample(n=duplicate_count, replace=True)
         return pd.concat([df, duplicate_rows], ignore_index=True)
 
-    def _drop_random_columns(self, df: pd.DataFrame, missing_column_rate: float) -> pd.DataFrame:
-        """Drop random non-key columns to simulate schema-level data issues."""
-        if missing_column_rate <= 0:
+    def _inject_missing_values(self, df: pd.DataFrame, missing_value_rate: float) -> pd.DataFrame:
+        """Replace random non-key cells with missing values to simulate incomplete records."""
+        if missing_value_rate <= 0 or df.empty:
             return df
 
-        protected_columns = {'patient_id', 'timestamp'}
+        protected_columns = {'patient_id', 'name', 'timestamp'}
         candidate_columns = [c for c in df.columns if c not in protected_columns]
 
-        columns_to_drop = [
-            col for col in candidate_columns if np.random.random() < missing_column_rate
-        ]
+        if not candidate_columns:
+            return df
 
-        # Keep at least one measurement column so downstream analysis can still run.
-        if len(columns_to_drop) == len(candidate_columns) and candidate_columns:
-            columns_to_drop.pop()
+        df_with_missing = df.copy()
+        random_mask = np.random.random((len(df_with_missing), len(candidate_columns))) < missing_value_rate
+        mask_df = pd.DataFrame(random_mask, columns=candidate_columns, index=df_with_missing.index)
 
-        if columns_to_drop:
-            return df.drop(columns=columns_to_drop)
-        return df
+        # Keep at least one populated clinical field per row so downstream analysis still has signal.
+        rows_all_missing = mask_df.all(axis=1)
+        for row_index in mask_df.index[rows_all_missing]:
+            column_to_keep = np.random.choice(candidate_columns)
+            mask_df.at[row_index, column_to_keep] = False
+
+        for column in candidate_columns:
+            df_with_missing.loc[mask_df[column], column] = np.nan
+
+        return df_with_missing
 
 
 if __name__ == "__main__":
@@ -210,7 +256,7 @@ if __name__ == "__main__":
     full_df = simulator.generate_dataset(
         n_patients=20,
         duplicate_rate=0.15,
-        missing_column_rate=0.15,
+        missing_value_rate=0.15,
     )
     
     print("Generated patient data with vitals:")
@@ -221,4 +267,4 @@ if __name__ == "__main__":
     if numeric_columns:
         print(full_df[numeric_columns].describe())
     else:
-        print("No numeric columns available (some columns were dropped intentionally).")
+        print("No numeric columns available.")

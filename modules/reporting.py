@@ -36,6 +36,60 @@ class ClinicalReportGenerator:
         if pd.isna(value):
             return None
         return round(float(value), digits)
+
+    @staticmethod
+    def _severity_rank(severity: str) -> int:
+        """Sort helper for severity labels."""
+        order = {'critical': 0, 'warning': 1, 'info': 2}
+        return order.get(str(severity).lower(), 99)
+
+    def _build_recommendations(
+        self,
+        quality_report: Dict[str, Any],
+        anomaly_report: Optional[Dict[str, Any]] = None,
+        alert_report: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        """Build concise action-oriented recommendations."""
+        recommendations: List[str] = []
+
+        missing_cells = int(quality_report.get('missing_cells', 0))
+        duplicate_count = int(quality_report.get('duplicate_patient_ids_count', 0))
+        phys_violations = quality_report.get('physiological_limit_violations', {}) or {}
+        phys_violation_count = sum(len(v) for v in phys_violations.values())
+
+        if missing_cells > 0:
+            recommendations.append(
+                "Address missing fields in source data feeds and add input validation at data entry points."
+            )
+        if duplicate_count > 0:
+            recommendations.append(
+                "Resolve duplicate patient identifiers and enforce unique constraints in upstream systems."
+            )
+        if phys_violation_count > 0:
+            recommendations.append(
+                "Review out-of-physiological-range measurements for sensor faults or data-entry errors."
+            )
+
+        if anomaly_report:
+            if_count = int(anomaly_report.get('isolation_forest_anomaly_count', 0))
+            if if_count > 0:
+                recommendations.append(
+                    "Triage Isolation Forest outliers to identify multivariate deterioration patterns."
+                )
+
+        if alert_report:
+            sev = alert_report.get('severity_breakdown', {}) or {}
+            if int(sev.get('critical', 0)) > 0:
+                recommendations.append(
+                    "Escalate critical alerts immediately according to local clinical governance workflows."
+                )
+
+        if not recommendations:
+            recommendations.append(
+                "No high-priority data quality or clinical risk signals detected; continue routine monitoring."
+            )
+
+        return recommendations
     
     def generate_summary_statistics(self, df: pd.DataFrame, 
                                    columns: Optional[List[str]] = None) -> Dict:
@@ -81,6 +135,8 @@ class ClinicalReportGenerator:
                 'total_alerts': 0,
                 'severity_breakdown': {},
                 'alert_types': {},
+                'top_rules': [],
+                'top_patients': [],
                 'generated_at': datetime.now().isoformat()
             }
         
@@ -88,6 +144,7 @@ class ClinicalReportGenerator:
         alert_types = {}
         framework_breakdown = {}
         patient_ids = set()
+        patient_alert_counts: Dict[str, int] = {}
         
         for alert in alerts:
             # Count by severity
@@ -106,12 +163,26 @@ class ClinicalReportGenerator:
             patient_id = getattr(alert, 'patient_id', None)
             if patient_id is not None:
                 patient_ids.add(patient_id)
+                patient_alert_counts[str(patient_id)] = patient_alert_counts.get(str(patient_id), 0) + 1
+
+        top_rules = sorted(
+            [{'rule_name': k, 'count': v} for k, v in alert_types.items()],
+            key=lambda x: x['count'],
+            reverse=True,
+        )[:5]
+        top_patients = sorted(
+            [{'patient_id': k, 'alert_count': v} for k, v in patient_alert_counts.items()],
+            key=lambda x: x['alert_count'],
+            reverse=True,
+        )[:5]
         
         return {
             'total_alerts': len(alerts),
             'patients_affected': len(patient_ids),
             'severity_breakdown': severity_counts,
             'alert_types': alert_types,
+            'top_rules': top_rules,
+            'top_patients': top_patients,
             'framework_breakdown': framework_breakdown,
             'generated_at': datetime.now().isoformat()
         }
@@ -187,11 +258,36 @@ class ClinicalReportGenerator:
         total_cells = df.shape[0] * df.shape[1]
         missing_cells = int(df.isnull().sum().sum())
         quality_score = ((total_cells - missing_cells) / total_cells * 100) if total_cells > 0 else 0
+        is_complete, missing_columns = checker.check_data_completeness(
+            df,
+            checker.REQUIRED_COLUMNS,
+        )
 
         duplicate_count = 0
         duplicate_ids: List[Any] = []
         if 'patient_id' in df.columns:
             duplicate_count, duplicate_ids = checker.check_duplicates(df, 'patient_id')
+
+        physiological_violations = checker.check_physiological_limits(df)
+        total_physiological_violations = sum(len(v) for v in physiological_violations.values())
+
+        key_issues = []
+        if missing_cells > 0:
+            key_issues.append(f"Missing cells detected: {missing_cells}")
+        if duplicate_count > 0:
+            key_issues.append(f"Duplicate patient IDs detected: {duplicate_count}")
+        if total_physiological_violations > 0:
+            key_issues.append(
+                f"Physiological limit violations detected: {total_physiological_violations}"
+            )
+
+        quality_grade = 'A'
+        if missing_cells > 0 or duplicate_count > 0 or total_physiological_violations > 0:
+            quality_grade = 'B'
+        if missing_cells > 20 or duplicate_count > 5 or total_physiological_violations > 10:
+            quality_grade = 'C'
+        if missing_cells > 50 or duplicate_count > 15 or total_physiological_violations > 20:
+            quality_grade = 'D'
 
         return {
             'total_records': len(df),
@@ -199,13 +295,18 @@ class ClinicalReportGenerator:
             'missing_cells': missing_cells,
             'missing_values_pct_by_column': checker.check_missing_values(df),
             'completeness_percentage': round(quality_score, 2),
+            'quality_grade': quality_grade,
+            'key_issues': key_issues,
+            'schema_complete': is_complete,
+            'missing_columns': missing_columns,
             'column_completeness': {
                 col: round((df[col].notna().sum() / len(df) * 100), 2) if len(df) > 0 else 0.0
                 for col in df.columns
             },
             'duplicate_patient_ids_count': duplicate_count,
             'duplicate_patient_ids': duplicate_ids,
-            'physiological_limit_violations': checker.check_physiological_limits(df),
+            'physiological_limit_violations': physiological_violations,
+            'total_physiological_violations': total_physiological_violations,
             'generated_at': datetime.now().isoformat()
         }
     
@@ -236,7 +337,8 @@ class ClinicalReportGenerator:
         }
         
         # Add quality metrics
-        report['quality_metrics'] = self.generate_quality_report(df)
+        quality_report = self.generate_quality_report(df)
+        report['quality_metrics'] = quality_report
         
         # Add summary statistics if requested
         if include_statistics:
@@ -255,6 +357,30 @@ class ClinicalReportGenerator:
 
             detector = AnomalyDetector()
             report['anomalies'] = detector.generate_anomaly_report(df)
+
+        alert_report = report.get('alerts')
+        anomaly_report = report.get('anomalies')
+
+        report['executive_summary'] = {
+            'quality_grade': quality_report.get('quality_grade'),
+            'records_analyzed': len(df),
+            'missing_cells': quality_report.get('missing_cells', 0),
+            'duplicate_patient_ids': quality_report.get('duplicate_patient_ids_count', 0),
+            'physiological_violations': quality_report.get('total_physiological_violations', 0),
+            'isolation_forest_anomalies': (
+                anomaly_report.get('isolation_forest_anomaly_count', 0)
+                if isinstance(anomaly_report, dict) else 0
+            ),
+            'critical_alerts': (
+                (alert_report.get('severity_breakdown', {}) or {}).get('critical', 0)
+                if isinstance(alert_report, dict) else 0
+            ),
+        }
+        report['recommendations'] = self._build_recommendations(
+            quality_report=quality_report,
+            anomaly_report=anomaly_report if isinstance(anomaly_report, dict) else None,
+            alert_report=alert_report if isinstance(alert_report, dict) else None,
+        )
         
         # Store in history
         self.report_history.append({

@@ -7,9 +7,28 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Any
 
+try:
+    from modules.clinical_thresholds import PHYSIOLOGICAL_LIMITS
+except ImportError:
+    from clinical_thresholds import PHYSIOLOGICAL_LIMITS
+
 
 class DataQualityChecker:
     """Performs quality checks on clinical data."""
+
+    REQUIRED_COLUMNS = [
+        'patient_id',
+        'name',
+        'age',
+        'gender',
+        'timestamp',
+        'heart_rate',
+        'blood_pressure_systolic',
+        'blood_pressure_diastolic',
+        'temperature',
+        'respiratory_rate',
+        'oxygen_saturation',
+    ]
 
     def check_missing_values(self, df: pd.DataFrame) -> Dict[str, float]:
         """
@@ -76,37 +95,50 @@ class DataQualityChecker:
         Returns:
             Dictionary of columns with physiologically impossible values
         """
-        # Wide ranges for data quality: catches impossible values
-        # (e.g., sensor errors, data entry mistakes)
-        physiological_ranges = {
-            'heart_rate': (30, 200),  # bpm 
-            'blood_pressure_systolic': (50, 250),  # mmHg
-            'blood_pressure_diastolic': (30, 150),  # mmHg
-            'temperature': (30.0, 45.0),  # °C
-            'respiratory_rate': (5, 60),  # breaths per minute
-            'oxygen_saturation': (50, 100)  # %
-        }
-        
-        return self.check_value_ranges(df, physiological_ranges)
+        return self.check_value_ranges(df, PHYSIOLOGICAL_LIMITS)
     
-    def check_data_completeness(self, df: pd.DataFrame, 
-                               required_columns: List[str]) -> Tuple[bool, List[str]]:
+    def check_data_completeness(self, df: pd.DataFrame, required_columns: List[str]) -> Tuple[bool, List[str]]:
         """
         Check if all required columns are present.
         
         Args:
             df: DataFrame to check
             required_columns: List of required column names
-            
+
         Returns:
-            Tuple of (is_complete, list of missing columns)
+            Tuple of (is_complete, missing_columns)
         """
         missing_columns = [col for col in required_columns if col not in df.columns]
+
         is_complete = len(missing_columns) == 0
-        
+
         return is_complete, missing_columns
     
-    def generate_quality_report(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def check_data_types(self, df: pd.DataFrame, expected_types: Dict[str, Any]) -> Dict[str, bool]:
+        """
+        Check if columns have expected data types.
+        
+        Args:
+            df: DataFrame to check
+            expected_types: Dictionary mapping column names to expected data types
+        Returns:
+            Dictionary of columns with correct data types (True/False)
+        """
+        type_checks = {}
+        
+        for column, expected_type in expected_types.items():
+            if column in df.columns:
+                type_checks[column] = df[column].map(type).eq(expected_type).all()
+            else:
+                type_checks[column] = False  # Column missing, so type check fails
+        
+        return type_checks
+    
+    def generate_quality_report(
+        self,
+        df: pd.DataFrame,
+        required_columns: List[str] = None,
+    ) -> Dict[str, Any]:
         """
         Generate comprehensive quality report.
         
@@ -116,10 +148,17 @@ class DataQualityChecker:
         Returns:
             Dictionary containing quality metrics
         """
+        if required_columns is None:
+            required_columns = self.REQUIRED_COLUMNS
+
+        is_complete, missing_columns = self.check_data_completeness(df, required_columns)
+
         report = {
             'total_records': len(df),
             'total_columns': len(df.columns),
             'missing_values': self.check_missing_values(df),
+            'schema_complete': is_complete,
+            'missing_columns': missing_columns,
             'data_types': df.dtypes.astype(str).to_dict(),
             'memory_usage_mb': round(df.memory_usage(deep=True).sum() / 1024**2, 2)
         }

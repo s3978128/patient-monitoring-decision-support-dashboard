@@ -9,6 +9,11 @@ from typing import Dict, List, Tuple, Optional
 from scipy import stats
 from sklearn.ensemble import IsolationForest
 
+try:
+    from modules.clinical_thresholds import CLINICAL_ANOMALY_RANGES, VITAL_SIGN_FEATURES
+except ImportError:
+    from clinical_thresholds import CLINICAL_ANOMALY_RANGES, VITAL_SIGN_FEATURES
+
 
 class AnomalyDetector:
     """Detects anomalies in clinical data."""
@@ -69,20 +74,8 @@ class AnomalyDetector:
         """
         anomalies = {}
         
-        # Narrow ranges for clinical anomalies: catches concerning values
-        # that may require medical intervention
-        vital_sign_ranges = {
-            'heart_rate': (40, 120),
-            'blood_pressure_systolic': (80, 180),
-            'blood_pressure_diastolic': (50, 100),
-            'temperature': (35.0, 39.0),
-            'respiratory_rate': (8, 30),
-            'oxygen_saturation': (85, 100)
-        }
-        
         # Check for out-of-range values
-        
-        for column, (min_val, max_val) in vital_sign_ranges.items():
+        for column, (min_val, max_val) in CLINICAL_ANOMALY_RANGES.items():
             if column in df.columns:
                 anomaly_mask = (df[column] < min_val) | (df[column] > max_val)
                 if anomaly_mask.any():
@@ -127,8 +120,8 @@ class AnomalyDetector:
 
         Args:
             df: DataFrame containing vital signs/features
-            feature_columns: Optional feature columns to include. If None,
-                numeric columns are used automatically.
+            feature_columns: Columns to use as features. Defaults to the
+                known vital-sign columns so demographics are never included.
             random_state: Random state for reproducibility
 
         Returns:
@@ -138,7 +131,7 @@ class AnomalyDetector:
             return []
 
         if feature_columns is None:
-            feature_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            feature_columns = VITAL_SIGN_FEATURES
 
         if not feature_columns:
             return []
@@ -163,6 +156,57 @@ class AnomalyDetector:
 
         predictions = model.fit_predict(model_input)
         return df.index[predictions == -1].tolist()
+
+    def _compute_isolation_forest_feature_importance(
+        self,
+        model_input: pd.DataFrame,
+        predictions: np.ndarray,
+    ) -> Dict[str, float]:
+        """
+        Compute an explainability proxy for Isolation Forest anomaly drivers.
+
+        Isolation Forest does not expose native per-feature importances for a
+        fitted model instance. This method estimates feature influence by
+        comparing anomaly vs non-anomaly center values and scaling by overall
+        feature variability.
+
+        Args:
+            model_input: Numeric model input used for training/prediction
+            predictions: Isolation Forest predictions (1 for normal, -1 anomaly)
+
+        Returns:
+            Dictionary mapping feature names to normalized importance percentages
+        """
+        if model_input.empty or len(predictions) != len(model_input):
+            return {}
+
+        anomaly_mask = predictions == -1
+        normal_mask = predictions == 1
+
+        if anomaly_mask.sum() == 0 or normal_mask.sum() == 0:
+            return {}
+
+        anomaly_frame = model_input.loc[anomaly_mask]
+        normal_frame = model_input.loc[normal_mask]
+
+        raw_scores = {}
+        for column in model_input.columns:
+            std_val = float(model_input[column].std())
+            if std_val == 0 or pd.isna(std_val):
+                continue
+
+            anomaly_center = float(anomaly_frame[column].median())
+            normal_center = float(normal_frame[column].median())
+            raw_scores[column] = abs(anomaly_center - normal_center) / std_val
+
+        total_score = sum(raw_scores.values())
+        if total_score <= 0:
+            return {}
+
+        return {
+            feature: round((score / total_score) * 100, 2)
+            for feature, score in sorted(raw_scores.items(), key=lambda item: item[1], reverse=True)
+        }
     
     def generate_anomaly_report(self, df: pd.DataFrame) -> Dict:
         """
@@ -174,10 +218,44 @@ class AnomalyDetector:
         Returns:
             Dictionary containing anomaly detection results
         """
+        if df.empty:
+            return {
+                'total_records': 0,
+                'vital_sign_anomalies': {},
+                'isolation_forest_anomalies': [],
+                'isolation_forest_feature_importance': {},
+                'total_anomalies': 0,
+                'anomaly_rate': 0,
+                'isolation_forest_anomaly_count': 0,
+                'isolation_forest_anomaly_rate': 0,
+                'timestamp': pd.Timestamp.now(),
+            }
+
+        available_features = [col for col in VITAL_SIGN_FEATURES if col in df.columns]
+        model_input = df[available_features].copy() if available_features else pd.DataFrame(index=df.index)
+        if not model_input.empty:
+            model_input = model_input.fillna(model_input.median(numeric_only=True))
+
+        if_anomalies = []
+        if_feature_importance = {}
+        if not model_input.empty:
+            model = IsolationForest(
+                contamination=self.contamination,
+                random_state=42,
+                n_estimators=200,
+            )
+            predictions = model.fit_predict(model_input)
+            if_anomalies = df.index[predictions == -1].tolist()
+            if_feature_importance = self._compute_isolation_forest_feature_importance(
+                model_input=model_input,
+                predictions=predictions,
+            )
+
         report = {
             'total_records': len(df),
             'vital_sign_anomalies': self.detect_vital_sign_anomalies(df),
-            'isolation_forest_anomalies': self.detect_isolation_forest_anomalies(df),
+            'isolation_forest_anomalies': if_anomalies,
+            'isolation_forest_feature_importance': if_feature_importance,
             'timestamp': pd.Timestamp.now()
         }
         

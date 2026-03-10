@@ -18,6 +18,7 @@ from modules.quality_checks import DataQualityChecker
 from modules.anomaly_detection import AnomalyDetector
 from modules.clinical_rules import ClinicalRulesEngine, AlertSeverity
 from modules.reporting import ClinicalReportGenerator
+from modules.clinical_thresholds import CLINICAL_ANOMALY_RANGES
 
 
 # Page configuration
@@ -30,7 +31,7 @@ st.set_page_config(
 
 
 def load_data(n_patients=100, anomaly_rate=0.15, severe_error_rate=0.05, 
-             duplicate_rate=0.1, missing_column_rate=0.0):
+             duplicate_rate=0.1, missing_value_rate=0.0):
     """Load or generate patient data with configurable error injection."""
     data_path = Path(__file__).parent.parent / 'data' / 'simulated_patients.csv'
     
@@ -56,7 +57,7 @@ def load_data(n_patients=100, anomaly_rate=0.15, severe_error_rate=0.05,
         df = simulator.generate_dataset(
             n_patients=n_patients,
             duplicate_rate=duplicate_rate,
-            missing_column_rate=missing_column_rate
+            missing_value_rate=missing_value_rate
         )
         
         # Save the generated data
@@ -70,15 +71,78 @@ def load_data(n_patients=100, anomaly_rate=0.15, severe_error_rate=0.05,
     return df
 
 
+def evaluate_alerts_for_dataset(df: pd.DataFrame):
+    """Evaluate clinical rules for all rows and return a flat alert list."""
+    engine = ClinicalRulesEngine()
+    all_alerts = []
+    for _, row in df.iterrows():
+        all_alerts.extend(engine.evaluate_all_rules(row.to_dict()))
+    return all_alerts
+
+
+def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1):
+    """Compute dashboard-level health metrics and their explainability breakdown."""
+    checker = DataQualityChecker()
+    quality_report = checker.generate_quality_report(df)
+
+    missing_cells = int(df.isnull().sum().sum())
+    total_cells = int(df.shape[0] * df.shape[1]) if not df.empty else 0
+    completeness_pct = (1 - (missing_cells / total_cells)) * 100 if total_cells > 0 else 100.0
+
+    duplicate_count = 0
+    if 'patient_id' in df.columns:
+        duplicate_count, _ = checker.check_duplicates(df, 'patient_id')
+    duplicate_rate_pct = (duplicate_count / len(df) * 100) if len(df) > 0 else 0.0
+
+    phys_violations = checker.check_physiological_limits(df)
+    total_phys_violations = sum(len(indices) for indices in phys_violations.values())
+    phys_rate_pct = (total_phys_violations / len(df) * 100) if len(df) > 0 else 0.0
+
+    quality_score = max(
+        0.0,
+        min(
+            100.0,
+            completeness_pct - (0.6 * duplicate_rate_pct) - (0.4 * phys_rate_pct),
+        ),
+    )
+
+    anomaly_report = AnomalyDetector(contamination=contamination).generate_anomaly_report(df)
+    anomaly_rate_pct = anomaly_report.get('isolation_forest_anomaly_rate', 0.0)
+
+    all_alerts = evaluate_alerts_for_dataset(df)
+    patient_ids_with_alerts = {
+        alert.patient_id for alert in all_alerts if getattr(alert, 'patient_id', None) is not None
+    }
+    alert_rate_pct = (len(patient_ids_with_alerts) / len(df) * 100) if len(df) > 0 else 0.0
+
+    return {
+        'data_quality_score': round(quality_score, 2),
+        'anomaly_rate': round(float(anomaly_rate_pct), 2),
+        'alert_rate': round(float(alert_rate_pct), 2),
+        'quality_breakdown': {
+            'completeness_pct': round(float(completeness_pct), 2),
+            'duplicate_rate_pct': round(float(duplicate_rate_pct), 2),
+            'phys_violation_rate_pct': round(float(phys_rate_pct), 2),
+            'missing_cells': missing_cells,
+            'missing_columns': quality_report.get('missing_columns', []),
+        },
+        'anomaly_report': anomaly_report,
+        'alerts': all_alerts,
+    }
+
+
 def main():
     """Main dashboard application."""
     
     # Header
     st.title("🏥 Clinical CDSS Monitoring Dashboard")
-    st.markdown("Real-time monitoring and quality assurance for Clinical Decision Support Systems")
+
     
-    # Sidebar
-    st.sidebar.header("Dashboard Controls")
+    # Sidebar options
+    view_mode = st.sidebar.selectbox(
+        "Select View",
+        ["Overview", "Monitoring Panel", "Quality Metrics", "Anomaly Detection", "Clinical Alerts", "Reports"]
+    )
     
     # Data generation options
     st.sidebar.subheader("Data Generation Settings")
@@ -86,7 +150,7 @@ def main():
     anomaly_rate = st.sidebar.slider("Clinical Anomaly Rate", 0.0, 0.5, 0.15)
     severe_error_rate = st.sidebar.slider("Severe Error Rate", 0.0, 0.2, 0.05)
     duplicate_rate = st.sidebar.slider("Duplicate Rate", 0.0, 0.3, 0.1)
-    missing_column_rate = st.sidebar.slider("Missing Column Rate", 0.0, 0.3, 0.0)
+    missing_value_rate = st.sidebar.slider("Missing Value Rate", 0.0, 0.3, 0.0)
     
     # Load data with settings
     df = load_data(
@@ -94,23 +158,14 @@ def main():
         anomaly_rate=anomaly_rate,
         severe_error_rate=severe_error_rate,
         duplicate_rate=duplicate_rate,
-        missing_column_rate=missing_column_rate
+        missing_value_rate=missing_value_rate
     )
-    
-    # Sidebar options
-    st.sidebar.markdown("---")
-    view_mode = st.sidebar.selectbox(
-        "Select View",
-        ["Overview", "Quality Metrics", "Anomaly Detection", "Clinical Alerts", "Reports"]
-    )
-    
-    st.sidebar.markdown("---")
-    st.sidebar.metric("Total Records", len(df))
-    st.sidebar.metric("Total Columns", len(df.columns))
     
     # Main content based on view mode
     if view_mode == "Overview":
         show_overview(df)
+    elif view_mode == "Monitoring Panel":
+        show_monitoring_panel(df)
     elif view_mode == "Quality Metrics":
         show_quality_metrics(df)
     elif view_mode == "Anomaly Detection":
@@ -119,6 +174,10 @@ def main():
         show_clinical_alerts(df)
     elif view_mode == "Reports":
         show_reports(df)
+    
+    st.sidebar.markdown("---")
+    st.sidebar.metric("Total Records", len(df))
+    st.sidebar.metric("Total Columns", len(df.columns))
 
 
 def show_overview(df):
@@ -135,10 +194,18 @@ def show_overview(df):
         st.metric("Average Age", f"{avg_age:.1f}")
     with col3:
         if 'heart_rate' in df.columns:
+            # in case of missing column or non-numeric values, handle gracefully
+            df['heart_rate'] = pd.to_numeric(df['heart_rate'], errors='coerce')
+            df = df.dropna(subset=['heart_rate'])
+            # calculate average heart rate
             avg_hr = df['heart_rate'].mean()
             st.metric("Avg Heart Rate", f"{avg_hr:.0f} bpm")
     with col4:
         if 'temperature' in df.columns:
+            # in case of missing column or non-numeric values, handle gracefully
+            df['temperature'] = pd.to_numeric(df['temperature'], errors='coerce')
+            df = df.dropna(subset=['temperature'])
+            # calculate average temperature
             avg_temp = df['temperature'].mean()
             st.metric("Avg Temperature", f"{avg_temp:.1f}°C")
     
@@ -149,19 +216,19 @@ def show_overview(df):
     
     with col1:
         if 'age' in df.columns:
-            fig = px.histogram(df, x='age', nbins=20, title="Age Distribution")
-            st.plotly_chart(fig, use_container_width=True)
+            fig = px.histogram(df, x='age', nbins=20, title="Age Distribution", color_discrete_sequence=['#2ecc71'])
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     with col2:
         if 'gender' in df.columns:
             gender_counts = df['gender'].value_counts()
             fig = px.pie(values=gender_counts.values, names=gender_counts.index, 
-                        title="Gender Distribution")
-            st.plotly_chart(fig, use_container_width=True)
+                        title="Gender Distribution", color_discrete_sequence=['#3498db'])
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
-    # Recent data
-    st.subheader("Recent Patient Records")
-    st.dataframe(df.head(10), use_container_width=True)
+    # All patient data
+    st.subheader("All Patient Records")
+    st.dataframe(df, use_container_width=True)
 
 
 def show_quality_metrics(df):
@@ -173,7 +240,9 @@ def show_quality_metrics(df):
     
     # Quality score
     missing_pct = quality_report.get('missing_values', {})
-    total_missing = sum(missing_pct.values()) if isinstance(missing_pct, dict) else 0
+    missing_counts = df.isnull().sum()
+    total_missing = int(missing_counts.sum())
+    missing_columns = quality_report.get('missing_columns', [])
     
     # Check for duplicates and physiological violations
     duplicate_count = 0
@@ -196,104 +265,335 @@ def show_quality_metrics(df):
     with col4:
         st.metric("Physiological Violations", total_phys_violations)
     
-    # Missing values details
-    st.subheader("Missing Values by Column")
-    missing_values = checker.check_missing_values(df)
-    
-    if missing_values:
-        missing_df = pd.DataFrame(list(missing_values.items()), 
-                                 columns=['Column', 'Missing %'])
-        fig = px.bar(missing_df, x='Column', y='Missing %', 
-                    title="Missing Values Percentage by Column")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
+    # Missing values count
+    if total_missing > 0:
+        st.subheader("Missing Values")
+        st.warning(f"Found {total_missing} missing values across the dataset")
+
+        missing_rows = df[df.isnull().any(axis=1)].copy() # Get rows with any missing values
+        missing_rows['missing_fields'] = missing_rows.apply(
+            # Create a comma-separated list of missing fields for each row
+            lambda row: ', '.join(row.index[row.isnull()].tolist()),
+            axis=1, # Add a new column that lists which fields are missing for each row
+        )
+
+        priority_cols = [
+            col for col in ['patient_id', 'name', 'timestamp', 'missing_fields']
+            if col in missing_rows.columns
+        ]
+        remaining_cols = [col for col in missing_rows.columns if col not in priority_cols]
+
+        with st.expander(f"View {len(missing_rows)} Rows With Missing Values"):
+            st.dataframe(
+                missing_rows[priority_cols + remaining_cols],
+                use_container_width=True,
+            )
+    elif not missing_columns:
         st.success("✅ No missing values detected!")
+
+    if missing_columns:
+        st.subheader("Missing Columns")
+        st.warning(
+            f"Found {len(missing_columns)} missing columns in the dataset schema"
+        )
+        missing_columns_df = pd.DataFrame({'Missing Column': missing_columns})
+        st.dataframe(missing_columns_df, use_container_width=True)
     
-    # Duplicate records
+    # Duplicate records - show both duplicates sorted by similalrity and by timestamp
     if duplicate_count > 0:
-        st.subheader(f"Duplicate Patient IDs ({duplicate_count})")
-        st.warning(f"Found {duplicate_count} duplicate patient IDs")
-        with st.expander("View Duplicate IDs"):
-            st.write(duplicate_ids[:20])  # Show first 20
+        st.subheader("Duplicate Records")
+        st.error(f"Found {duplicate_count} duplicate patient IDs")
+        
+        if duplicate_ids:
+            with st.expander(f"View {len(duplicate_ids)} Duplicate Records"):
+                duplicate_records = df[df['patient_id'].isin(duplicate_ids)].sort_values(by='timestamp', ascending=False)
+                # Select relevant columns for display, including name if available
+                display_cols = [col for col in ['patient_id', 'name', 'timestamp'] if col in duplicate_records.columns]
+                st.dataframe(duplicate_records[display_cols], use_container_width=True)
+    else:
+        st.success("✅ No duplicate patient IDs detected!")
+    
     
     # Physiological limit violations
+    # explain what this means with an info box
+    st.subheader("Physiological Limit Violations")
+    st.info("Physiological limit violations indicate values that fall outside of normal human ranges for vital signs. These may indicate data entry errors or critical patient conditions.")
     if total_phys_violations > 0:
-        st.subheader("Physiological Limit Violations")
         st.error(f"Found {total_phys_violations} values outside physiological limits")
-        
+        fig = px.bar(x=[f"{k} - {len(v)}" for k, v in phys_violations.items()], 
+                    y=[len(v) for v in phys_violations.values()],
+                    title="Physiological Limit Violations by Vital Sign", 
+                    color_discrete_sequence=['#e74c3c'])
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+        # Show details of violations
         for vital_sign, indices in phys_violations.items():
             with st.expander(f"{vital_sign} - {len(indices)} violations"):
                 if vital_sign in df.columns:
-                    violation_records = df.loc[indices, ['patient_id', vital_sign]]
+                    # Show patient_id, name, and the vital sign value for the violating records
+                    display_cols = [col for col in ['patient_id', 'name', vital_sign] if col in df.columns]
+                    violation_records = df.loc[indices, display_cols]
                     st.dataframe(violation_records, use_container_width=True)
     else:
         st.success("✅ No physiological limit violations!")
-    
-    # Data types
-    st.subheader("Data Types")
-    dtypes_df = pd.DataFrame({
-        'Column': df.columns,
-        'Data Type': df.dtypes.astype(str)
-    })
-    st.dataframe(dtypes_df, use_container_width=True)
+
+def _flag_vitals(row: pd.Series) -> str:
+    """Return a human-readable string listing which vital signs are outside CLINICAL_ANOMALY_RANGES."""
+    flags = []
+    for col, (lo, hi) in CLINICAL_ANOMALY_RANGES.items():
+        val = row.get(col)
+        if pd.isna(val):
+            continue
+        if val < lo:
+            flags.append(f"{col} {val} (low < {lo})")
+        elif val > hi:
+            flags.append(f"{col} {val} (high > {hi})")
+    return ", ".join(flags) if flags else "multivariate pattern"
 
 
 def show_anomaly_detection(df):
     """Display anomaly detection results."""
     st.header("Anomaly Detection")
-    
+    st.info(
+        "Two complementary methods are used. **Rule-based** detection flags individual "
+        "vital signs outside predefined clinical ranges. **Isolation Forest** is a "
+        "machine learning model that catches unusual *combinations* of values even when "
+        "no single vital sign is outside its range. Use the contamination slider to "
+        "control how aggressively the model flags outliers."
+    )
+
     contamination = st.slider("Isolation Forest Contamination Rate", 0.01, 0.3, 0.1)
     detector = AnomalyDetector(contamination=contamination)
     anomaly_report = detector.generate_anomaly_report(df)
-    
-    # Anomaly summary
+
+    # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
-        st.metric("Total Records Analyzed", anomaly_report['total_records'])
+        st.metric("Total Records", anomaly_report['total_records'])
     with col2:
         st.metric("Rule-Based Anomalies", anomaly_report['total_anomalies'])
     with col3:
         st.metric("Isolation Forest Anomalies", anomaly_report['isolation_forest_anomaly_count'])
     with col4:
         st.metric("IF Anomaly Rate", f"{anomaly_report['isolation_forest_anomaly_rate']:.2f}%")
-    
-    # Anomalies by type
-    st.subheader("Rule-Based Anomalies by Vital Sign")
-    
+
+    st.divider()
+
+    # ── Rule-Based ────────────────────────────────────────────────────────────
+    st.subheader("Rule-Based Anomalies")
     vital_anomalies = anomaly_report['vital_sign_anomalies']
-    
+
     if vital_anomalies:
         anomaly_counts = {k: len(v) for k, v in vital_anomalies.items()}
-        anomaly_df = pd.DataFrame(list(anomaly_counts.items()), 
-                                 columns=['Vital Sign', 'Anomaly Count'])
-        
-        fig = px.bar(anomaly_df, x='Vital Sign', y='Anomaly Count',
-                    title="Rule-Based Anomaly Count by Vital Sign",
-                    color_discrete_sequence=['#e74c3c'])
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Details
-        st.subheader("Anomaly Details")
+        fig = px.bar(
+            x=list(anomaly_counts.keys()),
+            y=list(anomaly_counts.values()),
+            labels={'x': 'Vital Sign', 'y': 'Count'},
+            title="Anomalies by Vital Sign",
+            color_discrete_sequence=['#e74c3c'],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+        # Build a single unified table: one row per (patient, flagged vital)
+        rows = []
+        vital_cols = [col for col in CLINICAL_ANOMALY_RANGES if col in df.columns]
         for vital_sign, indices in vital_anomalies.items():
-            with st.expander(f"{vital_sign} - {len(indices)} anomalies"):
-                if vital_sign in df.columns:
-                    anomalous_records = df.loc[indices, ['patient_id', vital_sign]]
-                    st.dataframe(anomalous_records, use_container_width=True)
+            if vital_sign not in df.columns:
+                continue
+            lo, hi = CLINICAL_ANOMALY_RANGES[vital_sign]
+            for idx in indices:
+                val = df.at[idx, vital_sign]
+                direction = "low" if val < lo else "high"
+                normal_range = f"{lo} – {hi}"
+                rows.append({
+                    'patient_id':   df.at[idx, 'patient_id'] if 'patient_id' in df.columns else idx,
+                    'name':         df.at[idx, 'name'] if 'name' in df.columns else '',
+                    'flagged_vital': vital_sign,
+                    'value':        val,
+                    'direction':    direction,
+                    'normal_range': normal_range,
+                })
+
+        if rows:
+            flagged_df = pd.DataFrame(rows).sort_values(['patient_id', 'flagged_vital'])
+            with st.expander(f"View {len(rows)} flagged vital sign readings", expanded=True):
+                st.dataframe(flagged_df, use_container_width=True, hide_index=True)
     else:
         st.success("✅ No rule-based anomalies detected in vital signs!")
-    
-    # Isolation Forest Anomalies
+
+    st.divider()
+
+    st.subheader("Isolation Forest Explainability")
+    feature_importance = anomaly_report.get('isolation_forest_feature_importance', {})
+    if feature_importance:
+        fi_df = pd.DataFrame(
+            [
+                {'Feature': feature, 'Importance': value}
+                for feature, value in feature_importance.items()
+            ]
+        ).sort_values(by='Importance', ascending=True)
+
+        fig = px.bar(
+            fi_df,
+            x='Importance',
+            y='Feature',
+            orientation='h',
+            title="Approximate Feature Importance for Isolation Forest Anomalies",
+            color_discrete_sequence=['#1abc9c'],
+        )
+        fig.update_layout(xaxis_title='Relative contribution (%)', yaxis_title='Feature')
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        st.caption(
+            "Importance is estimated from how strongly anomaly populations differ from "
+            "non-anomaly populations for each feature; it is a global signal, not a per-patient causal explanation."
+        )
+    else:
+        st.info("Feature importance is not available for the current sample (for example, no anomalies detected).")
+
+    st.divider()
+
+    # Isolation Forest 
     st.subheader("Isolation Forest Anomalies")
     if_anomalies = anomaly_report['isolation_forest_anomalies']
-    
+
     if if_anomalies:
-        st.warning(f"Found {len(if_anomalies)} multivariate anomalies using Isolation Forest")
-        with st.expander(f"View {len(if_anomalies)} Isolation Forest Anomalies"):
-            if_records = df.loc[if_anomalies]
-            st.dataframe(if_records, use_container_width=True)
+        st.warning(f"{len(if_anomalies)} records flagged as multivariate outliers.")
+
+        if_records = df.loc[if_anomalies].copy()
+
+        # Explain *why* each row was flagged by comparing against clinical ranges
+        if_records['flagged_vitals'] = if_records.apply(_flag_vitals, axis=1)
+
+        # Column order: identifiers → explanation → vitals
+        vital_cols = [c for c in CLINICAL_ANOMALY_RANGES if c in if_records.columns]
+        id_cols    = [c for c in ['patient_id', 'name'] if c in if_records.columns]
+        display_cols = id_cols + ['flagged_vitals'] + vital_cols
+
+        with st.expander(f"View {len(if_anomalies)} Isolation Forest anomalies", expanded=True):
+            st.dataframe(if_records[display_cols], use_container_width=True, hide_index=True)
     else:
         st.success("✅ No Isolation Forest anomalies detected!")
+
+
+def show_monitoring_panel(df):
+    """Display centralized monitoring and health-status panel."""
+    st.header("Monitoring Panel")
+
+    metrics = calculate_system_health_metrics(df)
+
+    st.subheader("System Health")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Data Quality Score", f"{metrics['data_quality_score']:.1f}/100")
+    with c2:
+        st.metric("Anomaly Rate", f"{metrics['anomaly_rate']:.2f}%")
+    with c3:
+        st.metric("Alert Rate", f"{metrics['alert_rate']:.2f}%")
+
+    quality_color = "#27ae60" if metrics['data_quality_score'] >= 85 else "#f39c12" if metrics['data_quality_score'] >= 70 else "#e74c3c"
+    anomaly_color = "#27ae60" if metrics['anomaly_rate'] <= 5 else "#f39c12" if metrics['anomaly_rate'] <= 15 else "#e74c3c"
+    alert_color = "#27ae60" if metrics['alert_rate'] <= 10 else "#f39c12" if metrics['alert_rate'] <= 25 else "#e74c3c"
+
+    gauge_col1, gauge_col2, gauge_col3 = st.columns(3)
+    with gauge_col1:
+        fig_quality = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=metrics['data_quality_score'],
+                title={'text': "Quality Score"},
+                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': quality_color}},
+            )
+        )
+        fig_quality.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=10))
+        st.plotly_chart(fig_quality, use_container_width=True, config={'displayModeBar': False})
+
+    with gauge_col2:
+        fig_anomaly = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=metrics['anomaly_rate'],
+                title={'text': "Anomaly Rate %"},
+                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': anomaly_color}},
+            )
+        )
+        fig_anomaly.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=10))
+        st.plotly_chart(fig_anomaly, use_container_width=True, config={'displayModeBar': False})
+
+    with gauge_col3:
+        fig_alert = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=metrics['alert_rate'],
+                title={'text': "Alert Rate %"},
+                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': alert_color}},
+            )
+        )
+        fig_alert.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=10))
+        st.plotly_chart(fig_alert, use_container_width=True, config={'displayModeBar': False})
+
+    st.subheader("Why These Scores Look This Way")
+    q = metrics['quality_breakdown']
+    explain_col1, explain_col2 = st.columns(2)
+
+    with explain_col1:
+        quality_components = pd.DataFrame(
+            [
+                {'Component': 'Completeness', 'Value (%)': q['completeness_pct']},
+                {'Component': 'Duplicate Penalty Basis', 'Value (%)': q['duplicate_rate_pct']},
+                {'Component': 'Physio Violation Basis', 'Value (%)': q['phys_violation_rate_pct']},
+            ]
+        )
+        st.dataframe(quality_components, use_container_width=True, hide_index=True)
+        if q['missing_columns']:
+            st.warning(f"Missing required columns: {', '.join(q['missing_columns'])}")
+        else:
+            st.caption("All required columns are present.")
+
+    with explain_col2:
+        anomaly_feature_importance = metrics['anomaly_report'].get('isolation_forest_feature_importance', {})
+        if anomaly_feature_importance:
+            top_features = pd.DataFrame(
+                [
+                    {'Feature': feature, 'Importance (%)': importance}
+                    for feature, importance in list(anomaly_feature_importance.items())[:5]
+                ]
+            )
+            st.dataframe(top_features, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No anomaly feature-importance data available in current run.")
+
+    st.subheader("Alert Explainability")
+    alert_rows = []
+    for alert in metrics['alerts']:
+        severity = alert.severity.value if hasattr(alert.severity, 'value') else str(alert.severity)
+        alert_rows.append(
+            {
+                'rule': alert.rule_name,
+                'severity': severity,
+                'framework': getattr(alert, 'framework', 'N/A'),
+            }
+        )
+
+    if alert_rows:
+        alert_df = pd.DataFrame(alert_rows)
+        rule_counts = (
+            alert_df['rule']
+            .value_counts()
+            .rename_axis('Rule')
+            .reset_index(name='Count')
+            .sort_values(by='Count', ascending=False)
+        )
+        fig = px.bar(
+            rule_counts,
+            x='Rule',
+            y='Count',
+            color_discrete_sequence=['#2980b9'],
+            title='Top Alert-Generating Rules',
+        )
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    else:
+        st.success("No alerts triggered in current dataset.")
 
 
 def show_clinical_alerts(df):
@@ -309,8 +609,8 @@ def show_clinical_alerts(df):
         alerts = engine.evaluate_all_rules(patient_data)
         all_alerts.extend(alerts)
     
-    # Alert summary
-    summary = engine.get_alerts_summary()
+    # Alert summary derived from the collected alerts only
+    summary = ClinicalRulesEngine.get_alerts_summary(all_alerts)
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -322,11 +622,34 @@ def show_clinical_alerts(df):
         st.metric("Warning", summary['severity_breakdown']['warning'])
     with col4:
         st.metric("Info", summary['severity_breakdown']['info'])
+
+    eval_col, refresh_col = st.columns([4, 1])
+    with eval_col:
+        st.caption(
+            f"Last alert evaluation: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            "(updates on each app rerun)."
+        )
+    with refresh_col:
+        if st.button("Refresh Alerts"):
+            st.rerun()
+
+    st.subheader("Clinical Framework Context")
+    st.markdown(
+        "- ACC/AHA blood pressure staging reference: "
+        "https://www.ahajournals.org/doi/10.1161/HYP.0000000000000065"
+    )
+    st.markdown(
+        "- NEWS2 early warning framework reference: "
+        "https://www.rcp.ac.uk/improving-care/resources/national-early-warning-score-news-2/"
+    )
+    st.info(
+        "Simplification note: this dashboard uses simplified threshold logic for monitoring and educational "
+        "purposes. It is not a complete implementation of any guideline and is not intended for direct "
+        "clinical decision-making."
+    )
     
-    # Alert breakdown
     if all_alerts:
         # Framework breakdown
-        st.subheader("Alert Breakdown by Framework")
         framework_counts = {}
         for alert in all_alerts:
             framework = getattr(alert, 'framework', 'unspecified')
@@ -351,20 +674,79 @@ def show_clinical_alerts(df):
                     title="Alerts by Clinical Rule",
                     color_discrete_sequence=['#3498db'])
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Recent alerts with framework info
+
         st.subheader("Recent Alerts")
-        
-        for alert in all_alerts[:20]:  # Show first 20
-            severity_color = {
-                AlertSeverity.CRITICAL: "🔴",
-                AlertSeverity.WARNING: "🟡",
-                AlertSeverity.INFO: "🔵"
-            }
-            
-            icon = severity_color.get(alert.severity, "⚪")
-            framework = getattr(alert, 'framework', 'N/A')
-            st.write(f"{icon} **{alert.rule_name}** ({framework}) - Patient {alert.patient_id}: {alert.message}")
+        st.caption("Structured view with filters and human-readable details.")
+
+        patient_name_lookup = {}
+        if 'patient_id' in df.columns and 'name' in df.columns:
+            patient_name_lookup = (
+                df[['patient_id', 'name']]
+                .drop_duplicates(subset=['patient_id'])
+                .set_index('patient_id')['name']
+                .to_dict()
+            )
+
+        alert_rows = []
+        for alert in all_alerts:
+            values = getattr(alert, 'values', {}) or {}
+            value_summary = ", ".join([f"{k}: {v}" for k, v in values.items()]) if values else "N/A"
+            severity_text = alert.severity.value if hasattr(alert.severity, 'value') else str(alert.severity)
+            patient_id = alert.patient_id
+            alert_rows.append({
+                'triggered_at': alert.triggered_at,
+                'severity': severity_text,
+                'patient_id': patient_id,
+                'patient_name': patient_name_lookup.get(patient_id, 'N/A'),
+                'rule': alert.rule_name,
+                'framework': getattr(alert, 'framework', 'N/A'),
+                'message': alert.message,
+                'trigger_values': value_summary,
+            })
+
+        alerts_df = pd.DataFrame(alert_rows)
+        severity_order = {'critical': 0, 'warning': 1, 'info': 2}
+        alerts_df['severity_rank'] = alerts_df['severity'].map(severity_order).fillna(99)
+        alerts_df = alerts_df.sort_values(by=['severity_rank', 'triggered_at'], ascending=[True, False])
+
+        severity_options = sorted(alerts_df['severity'].dropna().unique().tolist())
+        framework_options = sorted(alerts_df['framework'].dropna().unique().tolist())
+
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
+            selected_severity = st.multiselect(
+                "Filter by Severity",
+                options=severity_options,
+                default=severity_options,
+            )
+        with filter_col2:
+            selected_framework = st.multiselect(
+                "Filter by Framework",
+                options=framework_options,
+                default=framework_options,
+            )
+
+        filtered_alerts = alerts_df[
+            alerts_df['severity'].isin(selected_severity)
+            & alerts_df['framework'].isin(selected_framework)
+        ]
+
+        st.dataframe(
+            filtered_alerts[
+                [
+                    'triggered_at',
+                    'severity',
+                    'patient_id',
+                    'patient_name',
+                    'rule',
+                    'framework',
+                    'message',
+                    'trigger_values',
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.success("✅ No clinical alerts triggered!")
 
@@ -374,10 +756,13 @@ def show_reports(df):
     st.header("Report Generation")
     
     generator = ClinicalReportGenerator()
-    
-    # Report options
+
     st.subheader("Generate Report")
-    
+    st.info(
+        "Choose a report based on your goal: comprehensive for full clinical oversight, "
+        "quality for data integrity audits, or summary statistics for fast descriptive analytics."
+    )
+
     report_type = st.selectbox(
         "Report Type",
         ["Comprehensive Report", "Quality Report", "Summary Statistics"]
@@ -405,14 +790,121 @@ def show_reports(df):
                 report = generator.generate_summary_statistics(df)
             
             st.success("✅ Report generated successfully!")
-            
-            # Display report
-            st.json(report)
-            
-            # Download options
+
+            st.subheader("Report Output")
+
+            if report_type == "Comprehensive Report":
+                executive = report.get('executive_summary', {})
+                quality_metrics = report.get('quality_metrics', {})
+                alerts = report.get('alerts', {})
+                anomalies = report.get('anomalies', {})
+                recommendations = report.get('recommendations', [])
+
+                st.markdown("### Executive Summary")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("Quality Grade", executive.get('quality_grade', 'N/A'))
+                with c2:
+                    st.metric("Missing Cells", executive.get('missing_cells', 0))
+                with c3:
+                    st.metric("IF Anomalies", executive.get('isolation_forest_anomalies', 0))
+                with c4:
+                    st.metric("Critical Alerts", executive.get('critical_alerts', 0))
+
+                st.markdown("### Key Findings")
+                findings = quality_metrics.get('key_issues', [])
+                if findings:
+                    for item in findings:
+                        st.write(f"- {item}")
+                else:
+                    st.write("- No major data-quality issues detected.")
+
+                alert_breakdown = (alerts.get('severity_breakdown', {}) if isinstance(alerts, dict) else {})
+                if alert_breakdown:
+                    st.markdown("### Alert Severity Breakdown")
+                    alert_df = pd.DataFrame(
+                        [
+                            {'Severity': k.title(), 'Count': v}
+                            for k, v in alert_breakdown.items()
+                        ]
+                    ).sort_values(by='Count', ascending=False)
+                    st.dataframe(alert_df, use_container_width=True, hide_index=True)
+
+                if isinstance(anomalies, dict) and anomalies.get('vital_sign_anomalies'):
+                    st.markdown("### Rule-Based Anomaly Hotspots")
+                    anomaly_df = pd.DataFrame(
+                        [
+                            {'Vital Sign': k, 'Anomaly Count': len(v)}
+                            for k, v in anomalies.get('vital_sign_anomalies', {}).items()
+                        ]
+                    ).sort_values(by='Anomaly Count', ascending=False)
+                    st.dataframe(anomaly_df, use_container_width=True, hide_index=True)
+
+                st.markdown("### Recommended Actions")
+                for rec in recommendations:
+                    st.write(f"- {rec}")
+
+            elif report_type == "Quality Report":
+                st.markdown("### Quality Summary")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("Quality Grade", report.get('quality_grade', 'N/A'))
+                with c2:
+                    st.metric("Completeness", f"{report.get('completeness_percentage', 0)}%")
+                with c3:
+                    st.metric("Missing Cells", report.get('missing_cells', 0))
+                with c4:
+                    st.metric("Duplicate IDs", report.get('duplicate_patient_ids_count', 0))
+
+                missing_pct = report.get('missing_values_pct_by_column', {})
+                if missing_pct:
+                    st.markdown("### Missing Values by Column")
+                    missing_df = pd.DataFrame(
+                        [
+                            {'Column': col, 'Missing %': pct}
+                            for col, pct in missing_pct.items()
+                        ]
+                    ).sort_values(by='Missing %', ascending=False)
+                    st.dataframe(missing_df, use_container_width=True, hide_index=True)
+
+                phys = report.get('physiological_limit_violations', {})
+                if phys:
+                    st.markdown("### Physiological Limit Violations")
+                    phys_df = pd.DataFrame(
+                        [
+                            {'Field': col, 'Violation Count': len(indices)}
+                            for col, indices in phys.items()
+                        ]
+                    ).sort_values(by='Violation Count', ascending=False)
+                    st.dataframe(phys_df, use_container_width=True, hide_index=True)
+
+                issues = report.get('key_issues', [])
+                if issues:
+                    st.markdown("### Key Issues")
+                    for issue in issues:
+                        st.write(f"- {issue}")
+
+            else:  # Summary Statistics
+                st.markdown("### Summary Statistics")
+                if report:
+                    stats_rows = []
+                    for metric, values in report.items():
+                        stats_rows.append({
+                            'Metric': metric,
+                            'Mean': values.get('mean'),
+                            'Median': values.get('median'),
+                            'Std': values.get('std'),
+                            'Min': values.get('min'),
+                            'Max': values.get('max'),
+                            'Count': values.get('count'),
+                        })
+                    stats_df = pd.DataFrame(stats_rows)
+                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No numeric fields available for summary statistics.")
+
             import json
             col1, col2 = st.columns(2)
-            
             with col1:
                 json_str = json.dumps(report, indent=2, default=str)
                 st.download_button(
@@ -421,13 +913,21 @@ def show_reports(df):
                     file_name=f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                     mime="application/json"
                 )
-            
+
             with col2:
-                # Create a flattened version for CSV
-                try:
-                    csv_data = pd.DataFrame([report]).to_csv(index=False)
-                except:
-                    csv_data = str(report)
+                if report_type == "Summary Statistics":
+                    csv_data = pd.DataFrame(
+                        [
+                            {
+                                'metric': metric,
+                                **values,
+                            }
+                            for metric, values in report.items()
+                        ]
+                    ).to_csv(index=False)
+                else:
+                    csv_data = pd.json_normalize(report, sep='__').to_csv(index=False)
+
                 st.download_button(
                     label="Download CSV",
                     data=csv_data,

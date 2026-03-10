@@ -8,6 +8,35 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+try:
+    from modules.clinical_thresholds import (
+        TACHYCARDIA_WARNING, TACHYCARDIA_CRITICAL,
+        HYPERTENSION_STAGE1_SYSTOLIC, HYPERTENSION_STAGE1_DIASTOLIC,
+        HYPERTENSION_STAGE2_SYSTOLIC, HYPERTENSION_STAGE2_DIASTOLIC,
+        HYPERTENSION_CRISIS_SYSTOLIC, HYPERTENSION_CRISIS_DIASTOLIC,
+        HYPOTENSION_WARNING_SYSTOLIC, HYPOTENSION_WARNING_DIASTOLIC,
+        HYPOTENSION_CRITICAL_SYSTOLIC, HYPOTENSION_CRITICAL_DIASTOLIC,
+        HYPOXEMIA_WARNING, HYPOXEMIA_CRITICAL,
+        RESPIRATORY_HIGH_WARNING, RESPIRATORY_HIGH_CRITICAL,
+        RESPIRATORY_LOW_WARNING, RESPIRATORY_LOW_CRITICAL,
+        FEVER_WARNING_HIGH, FEVER_CRITICAL_HIGH,
+        FEVER_WARNING_LOW, FEVER_CRITICAL_LOW,
+    )
+except ImportError:
+    from clinical_thresholds import (
+        TACHYCARDIA_WARNING, TACHYCARDIA_CRITICAL,
+        HYPERTENSION_STAGE1_SYSTOLIC, HYPERTENSION_STAGE1_DIASTOLIC,
+        HYPERTENSION_STAGE2_SYSTOLIC, HYPERTENSION_STAGE2_DIASTOLIC,
+        HYPERTENSION_CRISIS_SYSTOLIC, HYPERTENSION_CRISIS_DIASTOLIC,
+        HYPOTENSION_WARNING_SYSTOLIC, HYPOTENSION_WARNING_DIASTOLIC,
+        HYPOTENSION_CRITICAL_SYSTOLIC, HYPOTENSION_CRITICAL_DIASTOLIC,
+        HYPOXEMIA_WARNING, HYPOXEMIA_CRITICAL,
+        RESPIRATORY_HIGH_WARNING, RESPIRATORY_HIGH_CRITICAL,
+        RESPIRATORY_LOW_WARNING, RESPIRATORY_LOW_CRITICAL,
+        FEVER_WARNING_HIGH, FEVER_CRITICAL_HIGH,
+        FEVER_WARNING_LOW, FEVER_CRITICAL_LOW,
+    )
+
 
 class AlertSeverity(Enum):
     """Alert severity levels."""
@@ -40,8 +69,6 @@ class ClinicalRulesEngine:
     
     def __init__(self):
         """Initialize the clinical rules engine."""
-        self.alerts = []
-        self.rules_executed = 0
 
     @staticmethod
     def _is_missing(value) -> bool:
@@ -64,8 +91,8 @@ class ClinicalRulesEngine:
         if self._is_missing(heart_rate):
             return None
         
-        if heart_rate > 100:
-            severity = AlertSeverity.CRITICAL if heart_rate >= 130 else AlertSeverity.WARNING
+        if heart_rate > TACHYCARDIA_WARNING:
+            severity = AlertSeverity.CRITICAL if heart_rate >= TACHYCARDIA_CRITICAL else AlertSeverity.WARNING
             return ClinicalAlert(
                 patient_id=patient_id,
                 rule_name="Tachycardia Detection",
@@ -95,11 +122,11 @@ class ClinicalRulesEngine:
         if self._is_missing(systolic) or self._is_missing(diastolic):
             return None
         
-        if systolic >= 130 or diastolic >= 80:
-            if systolic >= 180 or diastolic >= 120:
+        if systolic >= HYPERTENSION_STAGE1_SYSTOLIC or diastolic >= HYPERTENSION_STAGE1_DIASTOLIC:
+            if systolic >= HYPERTENSION_CRISIS_SYSTOLIC or diastolic >= HYPERTENSION_CRISIS_DIASTOLIC:
                 severity = AlertSeverity.CRITICAL
                 stage = "Hypertensive crisis"
-            elif systolic >= 140 or diastolic >= 90:
+            elif systolic >= HYPERTENSION_STAGE2_SYSTOLIC or diastolic >= HYPERTENSION_STAGE2_DIASTOLIC:
                 severity = AlertSeverity.WARNING
                 stage = "Stage 2 hypertension"
             else:
@@ -127,8 +154,8 @@ class ClinicalRulesEngine:
         if self._is_missing(systolic) or self._is_missing(diastolic):
             return None
 
-        if systolic < 90 or diastolic < 60:
-            severity = AlertSeverity.CRITICAL if systolic < 80 or diastolic < 50 else AlertSeverity.WARNING
+        if systolic < HYPOTENSION_WARNING_SYSTOLIC or diastolic < HYPOTENSION_WARNING_DIASTOLIC:
+            severity = AlertSeverity.CRITICAL if systolic < HYPOTENSION_CRITICAL_SYSTOLIC or diastolic < HYPOTENSION_CRITICAL_DIASTOLIC else AlertSeverity.WARNING
             return ClinicalAlert(
                 patient_id=patient_id,
                 rule_name="Hypotension Detection",
@@ -157,8 +184,8 @@ class ClinicalRulesEngine:
         if self._is_missing(oxygen_sat):
             return None
         
-        if oxygen_sat <= 95:
-            severity = AlertSeverity.CRITICAL if oxygen_sat <= 91 else AlertSeverity.WARNING
+        if oxygen_sat <= HYPOXEMIA_WARNING:
+            severity = AlertSeverity.CRITICAL if oxygen_sat <= HYPOXEMIA_CRITICAL else AlertSeverity.WARNING
             return ClinicalAlert(
                 patient_id=patient_id,
                 rule_name="Hypoxemia Detection",
@@ -179,8 +206,8 @@ class ClinicalRulesEngine:
         if self._is_missing(respiratory_rate):
             return None
 
-        if respiratory_rate >= 22 or respiratory_rate <= 8:
-            severity = AlertSeverity.CRITICAL if respiratory_rate >= 30 or respiratory_rate <= 6 else AlertSeverity.WARNING
+        if respiratory_rate >= RESPIRATORY_HIGH_WARNING or respiratory_rate <= RESPIRATORY_LOW_WARNING:
+            severity = AlertSeverity.CRITICAL if respiratory_rate >= RESPIRATORY_HIGH_CRITICAL or respiratory_rate <= RESPIRATORY_LOW_CRITICAL else AlertSeverity.WARNING
             return ClinicalAlert(
                 patient_id=patient_id,
                 rule_name="Respiratory Distress Detection",
@@ -209,8 +236,8 @@ class ClinicalRulesEngine:
         if self._is_missing(temperature):
             return None
         
-        if temperature >= 38.0 or temperature < 35.0:
-            severity = AlertSeverity.CRITICAL if temperature >= 39.5 or temperature < 34.0 else AlertSeverity.WARNING
+        if temperature >= FEVER_WARNING_HIGH or temperature < FEVER_WARNING_LOW:
+            severity = AlertSeverity.CRITICAL if temperature >= FEVER_CRITICAL_HIGH or temperature < FEVER_CRITICAL_LOW else AlertSeverity.WARNING
             return ClinicalAlert(
                 patient_id=patient_id,
                 rule_name="Temperature Abnormality Detection",
@@ -244,31 +271,32 @@ class ClinicalRulesEngine:
         
         alerts = []
         for rule in rules:
-            self.rules_executed += 1
             alert = rule(patient_data)
             if alert:
                 alerts.append(alert)
-                self.alerts.append(alert)
-        
+
         return alerts
     
-    def get_alerts_summary(self) -> Dict:
+    @staticmethod
+    def get_alerts_summary(alerts: List[ClinicalAlert]) -> Dict:
         """
-        Get summary of all alerts.
-        
+        Compute a summary from an explicit list of alerts.
+
+        Args:
+            alerts: List of ClinicalAlert objects to summarise.
+
         Returns:
-            Dictionary containing alert statistics
+            Dictionary containing alert statistics.
         """
         severity_counts = {
-            'critical': sum(1 for a in self.alerts if a.severity == AlertSeverity.CRITICAL),
-            'warning': sum(1 for a in self.alerts if a.severity == AlertSeverity.WARNING),
-            'info': sum(1 for a in self.alerts if a.severity == AlertSeverity.INFO)
+            'critical': sum(1 for a in alerts if a.severity == AlertSeverity.CRITICAL),
+            'warning': sum(1 for a in alerts if a.severity == AlertSeverity.WARNING),
+            'info': sum(1 for a in alerts if a.severity == AlertSeverity.INFO)
         }
-        
+
         return {
-            'total_alerts': len(self.alerts),
+            'total_alerts': len(alerts),
             'severity_breakdown': severity_counts,
-            'rules_executed': self.rules_executed
         }
 
 
