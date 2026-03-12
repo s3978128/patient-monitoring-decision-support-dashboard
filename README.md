@@ -4,6 +4,8 @@ Interactive Streamlit dashboard for monitoring synthetic clinical data quality, 
 
 This project is designed for monitoring and educational use. It is not intended for direct clinical diagnosis or treatment decisions.
 
+Access: https://patient-monitoring-decision-support-dashboard.streamlit.app/
+
 ## What This Project Does
 
 - Generates simulated patient records with configurable anomalies, missing values, severe errors, and duplicate rows.
@@ -65,13 +67,7 @@ clinical-cdss-monitoring/
 
 ## Requirements
 
-Dependencies listed in requirements.txt:
-
-- pandas
-- numpy
-- scikit-learn
-- streamlit
-- plotly
+Dependencies listed in requirements.txt.
 
 ## How to Use the App
 
