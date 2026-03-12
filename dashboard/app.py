@@ -38,8 +38,6 @@ def apply_frontend_theme():
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Source+Sans+3:wght@400;600&display=swap');
 
         :root {
-            --brand-bg: #000000;
-            --brand-fg: #ffffff;
             --brand-link: #7fd7ff;
             --brand-visited: #ffafff;
             --brand-active: #ff0000;
@@ -53,12 +51,7 @@ def apply_frontend_theme():
             color: var(--brand-fg);
             background: var(--brand-bg);
         }
-
-        [data-testid="stAppViewContainer"],
-        [data-testid="stHeader"],
-        [data-testid="stSidebar"] {
-            background: var(--brand-bg);
-        }
+        
 
         a:link { color: var(--brand-link) !important; }
         a:visited { color: var(--brand-visited) !important; }
@@ -84,7 +77,7 @@ def apply_frontend_theme():
         }
 
         .app-banner strong {
-            color: var(--brand-fg);
+            
             font-family: 'Manrope', sans-serif;
             font-size: 1.05rem;
         }
@@ -102,7 +95,6 @@ def apply_frontend_theme():
             border-radius: 10px;
             padding: 0.2rem 0.35rem;
             background: var(--brand-card);
-            color: var(--brand-fg);
         }
 
         .stDataFrame, .stTable {
