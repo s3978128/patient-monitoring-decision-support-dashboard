@@ -38,6 +38,8 @@ def apply_frontend_theme():
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Source+Sans+3:wght@400;600&display=swap');
 
         :root {
+            --brand-bg: #0a0a0a;
+            --brand-fg: #f0f0f0;
             --brand-link: #7fd7ff;
             --brand-visited: #ffafff;
             --brand-active: #ff0000;
@@ -70,14 +72,13 @@ def apply_frontend_theme():
 
         .app-banner {
             border: 1px solid var(--brand-border);
-            background: #050505;
+            background: var(--brand-card);
             border-radius: 14px;
             padding: 0.9rem 1.1rem;
             margin: 0.25rem 0 1rem 0;
         }
 
         .app-banner strong {
-            
             font-family: 'Manrope', sans-serif;
             font-size: 1.05rem;
         }
