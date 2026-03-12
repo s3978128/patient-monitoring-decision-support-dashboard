@@ -38,51 +38,75 @@ def apply_frontend_theme():
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Source+Sans+3:wght@400;600&display=swap');
 
         :root {
-            --brand-ink: #16324f;
-            --brand-teal: #0f766e;
-            --brand-sand: #f5f7f4;
-            --brand-warm: #fff4e8;
-            --brand-border: #d7e0dd;
+            --brand-bg: #000000;
+            --brand-fg: #ffffff;
+            --brand-link: #7fd7ff;
+            --brand-visited: #ffafff;
+            --brand-active: #ff0000;
+            --brand-selection: #8080ff;
+            --brand-card: #0d0d0d;
+            --brand-border: #ffffff;
         }
 
-        html, body, [class*="css"] {
+        html, body, [class*="css"], .stApp {
             font-family: 'Source Sans 3', sans-serif;
-            color: #1f2937;
+            color: var(--brand-fg);
+            background: var(--brand-bg);
+        }
+
+        [data-testid="stAppViewContainer"],
+        [data-testid="stHeader"],
+        [data-testid="stSidebar"] {
+            background: var(--brand-bg);
+        }
+
+        a:link { color: var(--brand-link) !important; }
+        a:visited { color: var(--brand-visited) !important; }
+        a:active { color: var(--brand-active) !important; }
+
+        ::selection {
+            background: var(--brand-selection);
+            color: var(--brand-fg);
         }
 
         h1, h2, h3 {
             font-family: 'Manrope', sans-serif !important;
-            color: var(--brand-ink);
+            color: var(--brand-fg);
             letter-spacing: -0.01em;
         }
 
         .app-banner {
             border: 1px solid var(--brand-border);
-            background: linear-gradient(135deg, #eef6f3 0%, #fdf8ef 100%);
+            background: #050505;
             border-radius: 14px;
             padding: 0.9rem 1.1rem;
             margin: 0.25rem 0 1rem 0;
         }
 
         .app-banner strong {
-            color: var(--brand-ink);
+            color: var(--brand-fg);
             font-family: 'Manrope', sans-serif;
             font-size: 1.05rem;
         }
 
         .clinician-note {
-            border-left: 5px solid var(--brand-teal);
-            background: var(--brand-sand);
+            border-left: 5px solid var(--brand-link);
+            background: var(--brand-card);
             border-radius: 8px;
             padding: 0.7rem 0.9rem;
             margin: 0.35rem 0 0.8rem 0;
         }
 
         .stMetric {
-            border: 1px solid #e6ece9;
+            border: 1px solid #3a3a3a;
             border-radius: 10px;
             padding: 0.2rem 0.35rem;
-            background: #ffffff;
+            background: var(--brand-card);
+            color: var(--brand-fg);
+        }
+
+        .stDataFrame, .stTable {
+            background: var(--brand-card);
         }
         </style>
         """,
