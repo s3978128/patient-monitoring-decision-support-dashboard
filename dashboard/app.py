@@ -38,68 +38,78 @@ def apply_frontend_theme():
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Source+Sans+3:wght@400;600&display=swap');
 
         :root {
-            --brand-bg: #0a0a0a;
-            --brand-fg: #f0f0f0;
-            --brand-link: #7fd7ff;
-            --brand-visited: #ffafff;
-            --brand-active: #ff0000;
-            --brand-selection: #8080ff;
-            --brand-card: #0d0d0d;
-            --brand-border: #ffffff;
+            --brand-ink: #10273f;
+            --brand-teal: #0b5f59;
+            --brand-sand: #f3f6f4;
+            --brand-warm: #fbf2e6;
+            --brand-border: #c6d2ce;
+            --text-main: #17212b;
+            --text-secondary: #334155;
+            --text-muted: #475569;
         }
 
-        html, body, [class*="css"], .stApp {
+        html, body, [class*="css"] {
             font-family: 'Source Sans 3', sans-serif;
-            color: var(--brand-fg);
-            background: var(--brand-bg);
-        }
-        
-
-        a:link { color: var(--brand-link) !important; }
-        a:visited { color: var(--brand-visited) !important; }
-        a:active { color: var(--brand-active) !important; }
-
-        ::selection {
-            background: var(--brand-selection);
-            color: var(--brand-fg);
+           
         }
 
         h1, h2, h3 {
             font-family: 'Manrope', sans-serif !important;
-            color: var(--brand-fg);
+           
             letter-spacing: -0.01em;
+        }
+
+        p, li, label, .stMarkdown, .stText, .stCaption {
+           
+        }
+
+        .stCaption {
+            
         }
 
         .app-banner {
             border: 1px solid var(--brand-border);
-            background: var(--brand-card);
+           
             border-radius: 14px;
             padding: 0.9rem 1.1rem;
             margin: 0.25rem 0 1rem 0;
+            
         }
 
         .app-banner strong {
+           
             font-family: 'Manrope', sans-serif;
             font-size: 1.05rem;
         }
 
         .clinician-note {
-            border-left: 5px solid var(--brand-link);
-            background: var(--brand-card);
+            border-left: 5px solid var(--brand-teal);
+           
             border-radius: 8px;
             padding: 0.7rem 0.9rem;
             margin: 0.35rem 0 0.8rem 0;
         }
 
         .stMetric {
-            border: 1px solid #3a3a3a;
+            border: 1px solid #d8e2de;
             border-radius: 10px;
             padding: 0.2rem 0.35rem;
-            background: var(--brand-card);
+           
+            box-shadow: 0 1px 0 rgba(16, 39, 63, 0.03);
         }
 
-        .stDataFrame, .stTable {
-            background: var(--brand-card);
+        .stMetric label,
+        .stMetric div {
+            
+        }
+
+        .stAlert {
+           
+        }
+
+        div[data-testid="stDataFrame"] {
+            border: 1px solid #d8e2de;
+            border-radius: 8px;
         }
         </style>
         """,
