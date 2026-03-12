@@ -1,8 +1,9 @@
 """
-Clinical CDSS Monitoring Dashboard
+Patient Monitoring and Decision Support Dashboard
 Interactive web dashboard for monitoring clinical decision support system.
 """
 
+# imports
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -11,8 +12,7 @@ from datetime import datetime, timedelta
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).parent.parent))
-
+sys.path.append(str(Path(__file__).parent.parent)) # append parent directory to Python path 
 from modules.data_simulator import PatientDataSimulator
 from modules.quality_checks import DataQualityChecker
 from modules.anomaly_detection import AnomalyDetector
@@ -23,15 +23,75 @@ from modules.clinical_thresholds import CLINICAL_ANOMALY_RANGES
 
 # Page configuration
 st.set_page_config(
-    page_title="Clinical CDSS Monitoring",
+    page_title="Patient Monitoring and Decision Support",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 
+def apply_frontend_theme():
+    """Apply lightweight visual theme refinements for readability and hierarchy."""
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Source+Sans+3:wght@400;600&display=swap');
+
+        :root {
+            --brand-ink: #16324f;
+            --brand-teal: #0f766e;
+            --brand-sand: #f5f7f4;
+            --brand-warm: #fff4e8;
+            --brand-border: #d7e0dd;
+        }
+
+        html, body, [class*="css"] {
+            font-family: 'Source Sans 3', sans-serif;
+            color: #1f2937;
+        }
+
+        h1, h2, h3 {
+            font-family: 'Manrope', sans-serif !important;
+            color: var(--brand-ink);
+            letter-spacing: -0.01em;
+        }
+
+        .app-banner {
+            border: 1px solid var(--brand-border);
+            background: linear-gradient(135deg, #eef6f3 0%, #fdf8ef 100%);
+            border-radius: 14px;
+            padding: 0.9rem 1.1rem;
+            margin: 0.25rem 0 1rem 0;
+        }
+
+        .app-banner strong {
+            color: var(--brand-ink);
+            font-family: 'Manrope', sans-serif;
+            font-size: 1.05rem;
+        }
+
+        .clinician-note {
+            border-left: 5px solid var(--brand-teal);
+            background: var(--brand-sand);
+            border-radius: 8px;
+            padding: 0.7rem 0.9rem;
+            margin: 0.35rem 0 0.8rem 0;
+        }
+
+        .stMetric {
+            border: 1px solid #e6ece9;
+            border-radius: 10px;
+            padding: 0.2rem 0.35rem;
+            background: #ffffff;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def load_data(n_patients=100, anomaly_rate=0.15, severe_error_rate=0.05, 
-             duplicate_rate=0.1, missing_value_rate=0.0):
+             duplicate_rate=0.1, missing_value_rate=0.1):
     """Load or generate patient data with configurable error injection."""
     data_path = Path(__file__).parent.parent / 'data' / 'simulated_patients.csv'
     
@@ -47,7 +107,7 @@ def load_data(n_patients=100, anomaly_rate=0.15, severe_error_rate=0.05,
             st.warning(f"Could not load existing CSV file: {e}")
             df = None
     
-    if df is None or not use_existing:
+    if df is None or not use_existing: # Generate new data if loading failed or if user opted to generate
         # Generate sample data with error injection
         simulator = PatientDataSimulator(
             seed=42, 
@@ -71,16 +131,88 @@ def load_data(n_patients=100, anomaly_rate=0.15, severe_error_rate=0.05,
     return df
 
 
-def evaluate_alerts_for_dataset(df: pd.DataFrame):
+def get_duplicate_rows_preview(df: pd.DataFrame) -> pd.DataFrame:
+    """Return duplicate rows by patient_id for pre-cleaning review."""
+    if df.empty or 'patient_id' not in df.columns:
+        return pd.DataFrame()
+
+    duplicate_rows = df[df.duplicated(subset=['patient_id'], keep=False)].copy()
+    if duplicate_rows.empty:
+        return duplicate_rows
+
+    if 'timestamp' in duplicate_rows.columns:
+        duplicate_rows['timestamp'] = pd.to_datetime(duplicate_rows['timestamp'], errors='coerce') # ensure timestamp is datetime for sorting, prioritize most recent records in preview
+        duplicate_rows = duplicate_rows.sort_values(by='timestamp', ascending=False, na_position='last')
+
+    priority_cols = [col for col in ['patient_id', 'name', 'timestamp'] if col in duplicate_rows.columns]
+    remaining_cols = [col for col in duplicate_rows.columns if col not in priority_cols]
+    return duplicate_rows[priority_cols + remaining_cols]
+
+
+def deduplicate_patient_rows(df: pd.DataFrame, clean_dataset: bool = True):
+    """Optionally remove duplicate patient rows and keep the most recent record per patient_id."""
+    if df.empty or 'patient_id' not in df.columns:
+        return df, {
+            'input_rows': len(df),
+            'output_rows': len(df),
+            'duplicate_rows_detected': 0,
+            'duplicate_patient_ids_affected': 0,
+            'potential_removed_rows': 0,
+            'removed_rows': 0,
+            'cleaning_applied': clean_dataset,
+        }
+
+    working_df = df.copy()
+    duplicate_mask = working_df.duplicated(subset=['patient_id'], keep=False)
+    duplicate_rows_detected = int(duplicate_mask.sum())
+    duplicate_patient_ids_affected = int(working_df.loc[duplicate_mask, 'patient_id'].nunique())
+    potential_removed_rows = max(0, len(working_df) - int(working_df['patient_id'].nunique()))
+
+    if clean_dataset:
+        dedup_df = working_df.copy()
+        if 'timestamp' in dedup_df.columns:
+            dedup_df['timestamp'] = pd.to_datetime(dedup_df['timestamp'], errors='coerce')
+            dedup_df = dedup_df.sort_values(by='timestamp', ascending=False, na_position='last')
+        deduped_df = dedup_df.drop_duplicates(subset=['patient_id'], keep='first').reset_index(drop=True)
+    else:
+        deduped_df = working_df.reset_index(drop=True)
+
+    removed_rows = len(working_df) - len(deduped_df)
+
+    return deduped_df, {
+        'input_rows': len(df),
+        'output_rows': len(deduped_df),
+        'duplicate_rows_detected': duplicate_rows_detected,
+        'duplicate_patient_ids_affected': duplicate_patient_ids_affected, 
+        'potential_removed_rows': potential_removed_rows,
+        'removed_rows': removed_rows,
+        'cleaning_applied': clean_dataset,
+    }
+
+
+def evaluate_alerts_for_dataset(df: pd.DataFrame): 
     """Evaluate clinical rules for all rows and return a flat alert list."""
-    engine = ClinicalRulesEngine()
+    engine = ClinicalRulesEngine() 
     all_alerts = []
     for _, row in df.iterrows():
         all_alerts.extend(engine.evaluate_all_rules(row.to_dict()))
     return all_alerts
 
 
-def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1):
+def evaluate_inferences_for_dataset(df: pd.DataFrame):
+    """Evaluate guideline-based inferences for all rows and return a flat list."""
+    engine = ClinicalRulesEngine()
+    all_inferences = []
+    for _, row in df.iterrows():
+        all_inferences.extend(engine.evaluate_guideline_inferences(row.to_dict()))
+    return all_inferences
+
+
+def calculate_system_health_metrics(
+    df: pd.DataFrame,
+    dedup_summary: dict = None,
+    contamination: float = 0.1,
+):
     """Compute dashboard-level health metrics and their explainability breakdown."""
     checker = DataQualityChecker()
     quality_report = checker.generate_quality_report(df)
@@ -89,10 +221,16 @@ def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1
     total_cells = int(df.shape[0] * df.shape[1]) if not df.empty else 0
     completeness_pct = (1 - (missing_cells / total_cells)) * 100 if total_cells > 0 else 100.0
 
-    duplicate_count = 0
-    if 'patient_id' in df.columns:
-        duplicate_count, _ = checker.check_duplicates(df, 'patient_id')
-    duplicate_rate_pct = (duplicate_count / len(df) * 100) if len(df) > 0 else 0.0
+    dedup_summary = dedup_summary or {}  # dedup_summary may be None if deduplication hasn't been performed yet
+    duplicate_rows_detected = int(dedup_summary.get('duplicate_rows_detected', 0))
+    duplicate_rows_removed = int(dedup_summary.get('removed_rows', 0))
+    duplicate_patient_ids_affected = int(dedup_summary.get('duplicate_patient_ids_affected', 0))
+    input_rows = int(dedup_summary.get('input_rows', len(df)))
+
+    if input_rows > 0:
+        duplicate_rate_pct = (duplicate_rows_detected / input_rows) * 100
+    else:
+        duplicate_rate_pct = 0.0
 
     phys_violations = checker.check_physiological_limits(df)
     total_phys_violations = sum(len(indices) for indices in phys_violations.values())
@@ -104,7 +242,8 @@ def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1
             100.0,
             completeness_pct - (0.6 * duplicate_rate_pct) - (0.4 * phys_rate_pct),
         ),
-    )
+    ) # quality score is a weighted combination of completeness and error rates, with duplicate rate weighted more heavily since duplicates can distort analysis more than missing values in this context
+    # TODO: add this explanation to dashboard
 
     anomaly_report = AnomalyDetector(contamination=contamination).generate_anomaly_report(df)
     anomaly_rate_pct = anomaly_report.get('isolation_forest_anomaly_rate', 0.0)
@@ -113,7 +252,8 @@ def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1
     patient_ids_with_alerts = {
         alert.patient_id for alert in all_alerts if getattr(alert, 'patient_id', None) is not None
     }
-    alert_rate_pct = (len(patient_ids_with_alerts) / len(df) * 100) if len(df) > 0 else 0.0
+    total_patients = int(df['patient_id'].nunique()) if 'patient_id' in df.columns else len(df)
+    alert_rate_pct = (len(patient_ids_with_alerts) / total_patients * 100) if total_patients > 0 else 0.0
 
     return {
         'data_quality_score': round(quality_score, 2),
@@ -122,6 +262,9 @@ def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1
         'quality_breakdown': {
             'completeness_pct': round(float(completeness_pct), 2),
             'duplicate_rate_pct': round(float(duplicate_rate_pct), 2),
+            'duplicate_rows_detected': duplicate_rows_detected,
+            'duplicate_rows_removed': duplicate_rows_removed,
+            'duplicate_patient_ids_affected': duplicate_patient_ids_affected,
             'phys_violation_rate_pct': round(float(phys_rate_pct), 2),
             'missing_cells': missing_cells,
             'missing_columns': quality_report.get('missing_columns', []),
@@ -133,15 +276,25 @@ def calculate_system_health_metrics(df: pd.DataFrame, contamination: float = 0.1
 
 def main():
     """Main dashboard application."""
+    apply_frontend_theme()
     
     # Header
-    st.title("🏥 Clinical CDSS Monitoring Dashboard")
+    st.title("Patient Monitoring and Decision Support Dashboard")
+    st.markdown(
+        """
+        <div class="app-banner">
+            <strong>Clinical Monitoring Workspace</strong><br/>
+            Use this dashboard to review data quality, anomaly signals, and guideline-based alerts with transparent reasoning.
+        </div>
+        """,
+        unsafe_allow_html=True, # allow HTML for custom styling of the banner
+    )
 
     
     # Sidebar options
     view_mode = st.sidebar.selectbox(
         "Select View",
-        ["Overview", "Monitoring Panel", "Quality Metrics", "Anomaly Detection", "Clinical Alerts", "Reports"]
+        ["Overview", "Monitoring Panel", "Anomaly Detection", "Clinical Alerts", "Reports"]
     )
     
     # Data generation options
@@ -151,23 +304,45 @@ def main():
     severe_error_rate = st.sidebar.slider("Severe Error Rate", 0.0, 0.2, 0.05)
     duplicate_rate = st.sidebar.slider("Duplicate Rate", 0.0, 0.3, 0.1)
     missing_value_rate = st.sidebar.slider("Missing Value Rate", 0.0, 0.3, 0.0)
+    clean_duplicates = st.sidebar.checkbox("Clean duplicate patient rows before analysis", value=True)
     
     # Load data with settings
-    df = load_data(
+    raw_df = load_data(
         n_patients=n_patients,
         anomaly_rate=anomaly_rate,
         severe_error_rate=severe_error_rate,
         duplicate_rate=duplicate_rate,
         missing_value_rate=missing_value_rate
     )
+    duplicate_preview = get_duplicate_rows_preview(raw_df)
+    if not duplicate_preview.empty:
+        st.warning(
+            "Duplicate rows detected in raw dataset before cleaning. "
+            f"Detected {len(duplicate_preview)} rows across duplicated patient IDs."
+        )
+        with st.expander(f"View {len(duplicate_preview)} duplicate rows before cleaning"):
+            st.dataframe(duplicate_preview, use_container_width=True, hide_index=True)
+
+    df, dedup_summary = deduplicate_patient_rows(raw_df, clean_dataset=clean_duplicates)
+
+    if dedup_summary['cleaning_applied'] and dedup_summary['removed_rows'] > 0:
+        st.info(
+            "Deduplicated records before analysis: detected "
+            f"{dedup_summary['duplicate_rows_detected']} duplicate rows across "
+            f"{dedup_summary['duplicate_patient_ids_affected']} patient IDs and removed "
+            f"{dedup_summary['removed_rows']} rows by keeping the most recent record per patient ID."
+        )
+    elif (not dedup_summary['cleaning_applied']) and dedup_summary['duplicate_rows_detected'] > 0:
+        st.info(
+            "Duplicate cleaning is currently disabled. "
+            f"{dedup_summary['duplicate_rows_detected']} duplicate rows will remain in analysis unless cleaning is enabled."
+        )
     
     # Main content based on view mode
     if view_mode == "Overview":
         show_overview(df)
     elif view_mode == "Monitoring Panel":
-        show_monitoring_panel(df)
-    elif view_mode == "Quality Metrics":
-        show_quality_metrics(df)
+        show_monitoring_panel(df, dedup_summary=dedup_summary)
     elif view_mode == "Anomaly Detection":
         show_anomaly_detection(df)
     elif view_mode == "Clinical Alerts":
@@ -178,11 +353,16 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.metric("Total Records", len(df))
     st.sidebar.metric("Total Columns", len(df.columns))
+    if dedup_summary['duplicate_rows_detected'] > 0:
+        st.sidebar.metric("Detected Duplicate Rows", dedup_summary['duplicate_rows_detected'])
+        st.sidebar.metric("Removed Duplicates", dedup_summary['removed_rows'])
 
 
 def show_overview(df):
     """Display overview dashboard."""
     st.header("System Overview")
+    st.caption("Snapshot of the current patient cohort after optional data cleaning.")
+    view_df = df.copy()
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -190,23 +370,17 @@ def show_overview(df):
     with col1:
         st.metric("Total Records", len(df))
     with col2:
-        avg_age = df['age'].mean() if 'age' in df.columns else 0
+        avg_age = view_df['age'].mean() if 'age' in view_df.columns else 0
         st.metric("Average Age", f"{avg_age:.1f}")
     with col3:
-        if 'heart_rate' in df.columns:
-            # in case of missing column or non-numeric values, handle gracefully
-            df['heart_rate'] = pd.to_numeric(df['heart_rate'], errors='coerce')
-            df = df.dropna(subset=['heart_rate'])
-            # calculate average heart rate
-            avg_hr = df['heart_rate'].mean()
+        if 'heart_rate' in view_df.columns:
+            heart_rate_series = pd.to_numeric(view_df['heart_rate'], errors='coerce')
+            avg_hr = heart_rate_series.mean()
             st.metric("Avg Heart Rate", f"{avg_hr:.0f} bpm")
     with col4:
-        if 'temperature' in df.columns:
-            # in case of missing column or non-numeric values, handle gracefully
-            df['temperature'] = pd.to_numeric(df['temperature'], errors='coerce')
-            df = df.dropna(subset=['temperature'])
-            # calculate average temperature
-            avg_temp = df['temperature'].mean()
+        if 'temperature' in view_df.columns:
+            temperature_series = pd.to_numeric(view_df['temperature'], errors='coerce')
+            avg_temp = temperature_series.mean()
             st.metric("Avg Temperature", f"{avg_temp:.1f}°C")
     
     # Visualizations
@@ -215,25 +389,29 @@ def show_overview(df):
     col1, col2 = st.columns(2)
     
     with col1:
-        if 'age' in df.columns:
-            fig = px.histogram(df, x='age', nbins=20, title="Age Distribution", color_discrete_sequence=['#2ecc71'])
+        if 'age' in view_df.columns:
+            fig = px.histogram(view_df, x='age', nbins=20, title="Age Distribution", color_discrete_sequence=['#2ecc71'])
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     with col2:
-        if 'gender' in df.columns:
-            gender_counts = df['gender'].value_counts()
+        if 'gender' in view_df.columns:
+            gender_counts = view_df['gender'].value_counts()
             fig = px.pie(values=gender_counts.values, names=gender_counts.index, 
                         title="Gender Distribution", color_discrete_sequence=['#3498db'])
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     # All patient data
     st.subheader("All Patient Records")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(view_df, use_container_width=True)
 
 
-def show_quality_metrics(df):
+def show_quality_metrics(df, dedup_summary=None, embedded=False):
     """Display data quality metrics."""
-    st.header("Data Quality Metrics")
+    if embedded:
+        st.subheader("Quality Metrics")
+    else:
+        st.header("Data Quality Metrics")
+    st.caption("Quality findings are shown with duplicate handling context so results remain interpretable.")
     
     checker = DataQualityChecker()
     quality_report = checker.generate_quality_report(df)
@@ -249,6 +427,17 @@ def show_quality_metrics(df):
     duplicate_ids = []
     if 'patient_id' in df.columns:
         duplicate_count, duplicate_ids = checker.check_duplicates(df, 'patient_id')
+
+    detected_duplicate_rows = (dedup_summary or {}).get('duplicate_rows_detected', 0)
+    removed_duplicate_rows = (dedup_summary or {}).get('removed_rows', 0)
+    affected_duplicate_ids = (dedup_summary or {}).get('duplicate_patient_ids_affected', 0)
+    potential_removed_rows = (dedup_summary or {}).get('potential_removed_rows', 0)
+    cleaning_applied = (dedup_summary or {}).get('cleaning_applied', False)
+    duplicate_metric_label = (
+        "Duplicate IDs Remaining After Cleaning"
+        if cleaning_applied
+        else "Duplicate IDs In Current Dataset"
+    )
     
     phys_violations = checker.check_physiological_limits(df)
     total_phys_violations = sum(len(v) for v in phys_violations.values())
@@ -261,7 +450,10 @@ def show_quality_metrics(df):
     with col2:
         st.metric("Total Columns", quality_report['total_columns'])
     with col3:
-        st.metric("Duplicate IDs", duplicate_count)
+        st.metric(
+            duplicate_metric_label,
+            duplicate_count,
+        )
     with col4:
         st.metric("Physiological Violations", total_phys_violations)
     
@@ -300,7 +492,46 @@ def show_quality_metrics(df):
         st.dataframe(missing_columns_df, use_container_width=True)
     
     # Duplicate records - show both duplicates sorted by similalrity and by timestamp
-    if duplicate_count > 0:
+
+    st.subheader("Duplicate Records")
+    if detected_duplicate_rows > 0:
+        st.warning(
+            f"Detected {detected_duplicate_rows} duplicate rows across {affected_duplicate_ids} patient IDs before analysis."
+        )
+        if not cleaning_applied:
+            st.info(
+                "Duplicate cleaning is currently disabled, so these duplicate rows are included in current analysis."
+            )
+        summary_df = pd.DataFrame(
+            [
+                {
+                    'Metric': 'Duplicate rows detected at ingestion',
+                    'Value': detected_duplicate_rows,
+                },
+                {
+                    'Metric': 'Patient IDs affected',
+                    'Value': affected_duplicate_ids,
+                },
+                {
+                    'Metric': 'Rows removed before analysis',
+                    'Value': removed_duplicate_rows,
+                },
+                {
+                    'Metric': 'Rows removable if cleaning is enabled',
+                    'Value': potential_removed_rows,
+                },
+                {
+                    'Metric': 'Duplicate IDs remaining in cleaned dataset',
+                    'Value': duplicate_count,
+                },
+                {
+                    'Metric': 'Cleaning applied',
+                    'Value': 'Yes' if cleaning_applied else 'No',
+                },
+            ]
+        )
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    elif duplicate_count > 0:
         st.subheader("Duplicate Records")
         st.error(f"Found {duplicate_count} duplicate patient IDs")
         
@@ -379,7 +610,7 @@ def show_anomaly_detection(df):
 
     st.divider()
 
-    # ── Rule-Based ────────────────────────────────────────────────────────────
+    # Rule-Based ───────────────────────────────────────────────────────────
     st.subheader("Rule-Based Anomalies")
     vital_anomalies = anomaly_report['vital_sign_anomalies']
 
@@ -476,11 +707,20 @@ def show_anomaly_detection(df):
         st.success("✅ No Isolation Forest anomalies detected!")
 
 
-def show_monitoring_panel(df):
+def show_monitoring_panel(df, dedup_summary=None):
     """Display centralized monitoring and health-status panel."""
     st.header("Monitoring Panel")
+    st.markdown(
+        """
+        <div class="clinician-note">
+            <strong>How to read this panel:</strong> Start with System Health, then review score drivers,
+            and finally inspect alert explainability and embedded quality checks for context.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    metrics = calculate_system_health_metrics(df)
+    metrics = calculate_system_health_metrics(df, dedup_summary=dedup_summary)
 
     st.subheader("System Health")
     c1, c2, c3 = st.columns(3)
@@ -489,7 +729,7 @@ def show_monitoring_panel(df):
     with c2:
         st.metric("Anomaly Rate", f"{metrics['anomaly_rate']:.2f}%")
     with c3:
-        st.metric("Alert Rate", f"{metrics['alert_rate']:.2f}%")
+        st.metric("Alerted Patient Rate", f"{metrics['alert_rate']:.2f}%")
 
     quality_color = "#27ae60" if metrics['data_quality_score'] >= 85 else "#f39c12" if metrics['data_quality_score'] >= 70 else "#e74c3c"
     anomaly_color = "#27ae60" if metrics['anomaly_rate'] <= 5 else "#f39c12" if metrics['anomaly_rate'] <= 15 else "#e74c3c"
@@ -533,6 +773,7 @@ def show_monitoring_panel(df):
         st.plotly_chart(fig_alert, use_container_width=True, config={'displayModeBar': False})
 
     st.subheader("Why These Scores Look This Way")
+    st. markdown("""Duplicate Penalty Basis: Duplicates can distort analysis and lead to misleading insights if not handled properly. Physiological Violation Basis: Data entry errors or critical patient conditions that can impact the reliability of analysis.""")
     q = metrics['quality_breakdown']
     explain_col1, explain_col2 = st.columns(2)
 
@@ -540,11 +781,16 @@ def show_monitoring_panel(df):
         quality_components = pd.DataFrame(
             [
                 {'Component': 'Completeness', 'Value (%)': q['completeness_pct']},
-                {'Component': 'Duplicate Penalty Basis', 'Value (%)': q['duplicate_rate_pct']},
-                {'Component': 'Physio Violation Basis', 'Value (%)': q['phys_violation_rate_pct']},
+                {'Component': 'Duplicate Penalty Basis', 'Value (%)': q['duplicate_rate_pct']}, # explain that this is the percentage of duplicate rows relative to total input rows, which is used as a penalty factor in the quality score calculation since duplicates can distort analysis and lead to misleading insights if not handled properly
+                {'Component': 'Physio Violation Basis', 'Value (%)': q['phys_violation_rate_pct']}, # explain that this is the percentage of records with physiological limit violations relative to total records, which is used as a penalty factor in the quality score calculation since such violations may indicate data entry errors or critical patient conditions that can impact the reliability of analysis
             ]
         )
         st.dataframe(quality_components, use_container_width=True, hide_index=True)
+        st.caption(
+            f"Duplicate cleanup at ingestion: detected {q.get('duplicate_rows_detected', 0)} duplicate rows, "
+            f"removed {q.get('duplicate_rows_removed', 0)} rows across "
+            f"{q.get('duplicate_patient_ids_affected', 0)} patient IDs."
+        )
         if q['missing_columns']:
             st.warning(f"Missing required columns: {', '.join(q['missing_columns'])}")
         else:
@@ -563,42 +809,22 @@ def show_monitoring_panel(df):
         else:
             st.caption("No anomaly feature-importance data available in current run.")
 
-    st.subheader("Alert Explainability")
-    alert_rows = []
-    for alert in metrics['alerts']:
-        severity = alert.severity.value if hasattr(alert.severity, 'value') else str(alert.severity)
-        alert_rows.append(
-            {
-                'rule': alert.rule_name,
-                'severity': severity,
-                'framework': getattr(alert, 'framework', 'N/A'),
-            }
-        )
-
-    if alert_rows:
-        alert_df = pd.DataFrame(alert_rows)
-        rule_counts = (
-            alert_df['rule']
-            .value_counts()
-            .rename_axis('Rule')
-            .reset_index(name='Count')
-            .sort_values(by='Count', ascending=False)
-        )
-        fig = px.bar(
-            rule_counts,
-            x='Rule',
-            y='Count',
-            color_discrete_sequence=['#2980b9'],
-            title='Top Alert-Generating Rules',
-        )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-    else:
-        st.success("No alerts triggered in current dataset.")
+    st.divider()
+    show_quality_metrics(df, dedup_summary=dedup_summary, embedded=True)
 
 
 def show_clinical_alerts(df):
     """Display clinical alerts."""
     st.header("Clinical Alerts")
+    st.markdown(
+        """
+        <div class="clinician-note">
+            <strong>Suggested triage order:</strong> Critical alerts first, then warnings,
+            with diagnosis/rule/recommendation used as transparent decision support context.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     
     engine = ClinicalRulesEngine()
     
@@ -608,6 +834,10 @@ def show_clinical_alerts(df):
         patient_data = row.to_dict()
         alerts = engine.evaluate_all_rules(patient_data)
         all_alerts.extend(alerts)
+
+    all_inferences = evaluate_inferences_for_dataset(df)
+    inference_summary = engine.summarize_inferences(all_inferences)
+    unique_inference_patients = len({str(inference.patient_id) for inference in all_inferences})
     
     # Alert summary derived from the collected alerts only
     summary = ClinicalRulesEngine.get_alerts_summary(all_alerts)
@@ -622,6 +852,12 @@ def show_clinical_alerts(df):
         st.metric("Warning", summary['severity_breakdown']['warning'])
     with col4:
         st.metric("Info", summary['severity_breakdown']['info'])
+
+    inference_col1, inference_col2 = st.columns(2)
+    with inference_col1:
+        st.metric("Diagnosis Flags", inference_summary.get('total_inferences', 0))
+    with inference_col2:
+        st.metric("Patients With Risks", unique_inference_patients)
 
     eval_col, refresh_col = st.columns([4, 1])
     with eval_col:
@@ -642,11 +878,32 @@ def show_clinical_alerts(df):
         "- NEWS2 early warning framework reference: "
         "https://www.rcp.ac.uk/improving-care/resources/national-early-warning-score-news-2/"
     )
+    st.markdown(
+        "- Other rules and thresholds are based on common clinical knowledge and are intended for educational demonstration purposes only."
+    )
     st.info(
         "Simplification note: this dashboard uses simplified threshold logic for monitoring and educational "
         "purposes. It is not a complete implementation of any guideline and is not intended for direct "
         "clinical decision-making."
     )
+
+    st.subheader("Guideline-Based Diagnoses")
+    top_risks = inference_summary.get('top_risks', [])
+    if top_risks:
+        for risk in top_risks:
+            st.write(f"- {risk.get('summary_text')}")
+
+        triggered_rules = inference_summary.get('triggered_rule_breakdown', {})
+        if triggered_rules:
+            triggered_rules_df = pd.DataFrame(
+                [
+                    {'Triggered Guideline Rule': rule, 'Count': count}
+                    for rule, count in triggered_rules.items()
+                ]
+            ).sort_values(by='Count', ascending=False)
+            st.dataframe(triggered_rules_df, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No guideline-based diagnosis flags were generated for the current dataset.")
     
     if all_alerts:
         # Framework breakdown
@@ -687,12 +944,29 @@ def show_clinical_alerts(df):
                 .to_dict()
             )
 
+        patient_inference_map = {}
+        for inference in all_inferences:
+            patient_inference_map.setdefault(str(inference.patient_id), []).append(inference)
+
         alert_rows = []
         for alert in all_alerts:
             values = getattr(alert, 'values', {}) or {}
             value_summary = ", ".join([f"{k}: {v}" for k, v in values.items()]) if values else "N/A"
             severity_text = alert.severity.value if hasattr(alert.severity, 'value') else str(alert.severity)
             patient_id = alert.patient_id
+            patient_inferences = patient_inference_map.get(str(patient_id), [])
+            diagnosis_summary = " | ".join(
+                sorted({inference.diagnosis for inference in patient_inferences})
+            ) if patient_inferences else "No additional diagnosis"
+            recommendation_summary = " | ".join(
+                [inference.recommendation for inference in patient_inferences]
+            ) if patient_inferences else "Continue routine monitoring and reassess if symptoms evolve."
+            rule_summary = " | ".join(
+                [inference.triggered_guideline_rule for inference in patient_inferences]
+            ) if patient_inferences else "N/A"
+            explanation_summary = " | ".join(
+                [inference.explanation for inference in patient_inferences]
+            ) if patient_inferences else "No separate diagnosis inference for this case."
             alert_rows.append({
                 'triggered_at': alert.triggered_at,
                 'severity': severity_text,
@@ -702,6 +976,10 @@ def show_clinical_alerts(df):
                 'framework': getattr(alert, 'framework', 'N/A'),
                 'message': alert.message,
                 'trigger_values': value_summary,
+                'diagnosis': diagnosis_summary,
+                'recommendation': recommendation_summary,
+                'triggered_guideline_rule': rule_summary,
+                'explanation': explanation_summary,
             })
 
         alerts_df = pd.DataFrame(alert_rows)
@@ -738,15 +1016,38 @@ def show_clinical_alerts(df):
                     'severity',
                     'patient_id',
                     'patient_name',
+                    'diagnosis',
                     'rule',
                     'framework',
                     'message',
                     'trigger_values',
+                    'triggered_guideline_rule',
+                    'recommendation',
                 ]
             ],
             use_container_width=True,
             hide_index=True,
+            # AUTOSIZE
+            column_config={
+                "recommendation": st.column_config.TextColumn(
+                    "Recommendation",
+                    width="large"
+                )
+            }
         )
+
+        st.subheader("Clinician Guidance")
+        st.info(
+            "Triage flow: prioritize critical severity, verify trigger values, review the triggered guideline rule, "
+            "then use the recommendation column as the suggested next step."
+        )
+        with st.expander("Quick safety notes"):
+            st.markdown(
+                "- Use this dashboard as decision support, not a standalone diagnosis tool.\n"
+                "- Recheck vitals/labs when the reading does not match the clinical picture.\n"
+                "- Escalate critical findings per your local protocol.\n"
+                "- Document final clinical judgment in your standard clinical workflow."
+            )
     else:
         st.success("✅ No clinical alerts triggered!")
 
@@ -754,6 +1055,7 @@ def show_clinical_alerts(df):
 def show_reports(df):
     """Display report generation interface."""
     st.header("Report Generation")
+    st.caption("Generate exportable summaries for audits, handover, and multidisciplinary review.")
     
     generator = ClinicalReportGenerator()
 
@@ -798,6 +1100,7 @@ def show_reports(df):
                 quality_metrics = report.get('quality_metrics', {})
                 alerts = report.get('alerts', {})
                 anomalies = report.get('anomalies', {})
+                clinical_inferences = report.get('clinical_inferences', {})
                 recommendations = report.get('recommendations', [])
 
                 st.markdown("### Executive Summary")
@@ -818,6 +1121,43 @@ def show_reports(df):
                         st.write(f"- {item}")
                 else:
                     st.write("- No major data-quality issues detected.")
+
+                risk_summaries = executive.get('potential_clinical_risks', [])
+                st.markdown("### Potential Clinical Risks")
+                if risk_summaries:
+                    for risk in risk_summaries:
+                        st.write(f"- {risk}")
+                else:
+                    st.write("- No guideline-based clinical risks detected.")
+
+                inference_summary = clinical_inferences.get('summary', {}) if isinstance(clinical_inferences, dict) else {}
+                patient_level_inferences = clinical_inferences.get('patient_level_inferences', []) if isinstance(clinical_inferences, dict) else []
+                if patient_level_inferences:
+                    st.markdown("### Guideline-Based Inference Details")
+                    inference_df = pd.DataFrame(patient_level_inferences)
+                    preferred_cols = [
+                        col for col in [
+                            'patient_id',
+                            'diagnosis',
+                            'severity',
+                            'triggered_guideline_rule',
+                            'recommendation',
+                            'explanation',
+                            'evidence',
+                        ] if col in inference_df.columns
+                    ]
+                    st.dataframe(inference_df[preferred_cols], use_container_width=True, hide_index=True)
+
+                triggered_rules = inference_summary.get('triggered_rule_breakdown', {})
+                if triggered_rules:
+                    st.markdown("### Triggered Guideline Rules")
+                    triggered_rules_df = pd.DataFrame(
+                        [
+                            {'Guideline Rule': rule, 'Count': count}
+                            for rule, count in triggered_rules.items()
+                        ]
+                    ).sort_values(by='Count', ascending=False)
+                    st.dataframe(triggered_rules_df, use_container_width=True, hide_index=True)
 
                 alert_breakdown = (alerts.get('severity_breakdown', {}) if isinstance(alerts, dict) else {})
                 if alert_breakdown:

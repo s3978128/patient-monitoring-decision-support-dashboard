@@ -19,6 +19,7 @@ PHYSIOLOGICAL_LIMITS = {
     "temperature":              (30.0, 45.0), # °C
     "respiratory_rate":         (5,  60),     # breaths/min
     "oxygen_saturation":        (50, 100),    # %
+    "glucose":                  (2.0, 35.0),  # mmol/L
 }
 
 # ---------------------------------------------------------------------------
@@ -33,6 +34,7 @@ CLINICAL_ANOMALY_RANGES = {
     "temperature":              (35.0, 39.0),
     "respiratory_rate":         (8,  30),
     "oxygen_saturation":        (85, 100),
+    "glucose":                  (3.5, 11.1),
 }
 
 # ---------------------------------------------------------------------------
@@ -48,6 +50,7 @@ VITAL_SIGN_FEATURES = [
     "temperature",
     "respiratory_rate",
     "oxygen_saturation",
+    "glucose",
 ]
 
 # ---------------------------------------------------------------------------
@@ -88,3 +91,7 @@ FEVER_WARNING_HIGH  = 38.0
 FEVER_CRITICAL_HIGH = 39.5
 FEVER_WARNING_LOW   = 35.0
 FEVER_CRITICAL_LOW  = 34.0
+
+# Glucose / diabetes risk (simple fasting/random screening proxy, simplified)
+GLUCOSE_DIABETES_RISK = 7.0
+GLUCOSE_HIGH_RISK = 11.1

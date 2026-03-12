@@ -21,6 +21,7 @@ try:
         RESPIRATORY_LOW_WARNING, RESPIRATORY_LOW_CRITICAL,
         FEVER_WARNING_HIGH, FEVER_CRITICAL_HIGH,
         FEVER_WARNING_LOW, FEVER_CRITICAL_LOW,
+        GLUCOSE_DIABETES_RISK, GLUCOSE_HIGH_RISK,
     )
 except ImportError:
     from clinical_thresholds import (
@@ -35,6 +36,7 @@ except ImportError:
         RESPIRATORY_LOW_WARNING, RESPIRATORY_LOW_CRITICAL,
         FEVER_WARNING_HIGH, FEVER_CRITICAL_HIGH,
         FEVER_WARNING_LOW, FEVER_CRITICAL_LOW,
+        GLUCOSE_DIABETES_RISK, GLUCOSE_HIGH_RISK,
     )
 
 
@@ -55,6 +57,18 @@ class ClinicalAlert:
     triggered_at: pd.Timestamp
     values: Dict
     framework: str = "local"
+
+
+@dataclass
+class ClinicalInference:
+    """Represents a simple explainable guideline-based clinical inference."""
+    patient_id: str
+    diagnosis: str
+    recommendation: str
+    triggered_guideline_rule: str
+    evidence: Dict
+    explanation: str
+    severity: str = "moderate"
 
 
 class ClinicalRulesEngine:
@@ -249,6 +263,130 @@ class ClinicalRulesEngine:
             )
         
         return None
+
+    def infer_hypertension_risk(self, patient_data: Dict) -> Optional[ClinicalInference]:
+        """Infer hypertension risk from blood pressure thresholds."""
+        systolic = patient_data.get('blood_pressure_systolic')
+        diastolic = patient_data.get('blood_pressure_diastolic')
+        patient_id = patient_data.get('patient_id')
+
+        if self._is_missing(systolic) and self._is_missing(diastolic):
+            return None
+
+        if (
+            (not self._is_missing(systolic) and systolic >= HYPERTENSION_STAGE2_SYSTOLIC)
+            or (not self._is_missing(diastolic) and diastolic >= HYPERTENSION_STAGE2_DIASTOLIC)
+        ):
+            values = []
+            if not self._is_missing(systolic):
+                values.append(f"SBP {systolic} mmHg")
+            if not self._is_missing(diastolic):
+                values.append(f"DBP {diastolic} mmHg")
+            return ClinicalInference(
+                patient_id=patient_id,
+                diagnosis="Hypertension risk",
+                recommendation="Repeat blood pressure measurement, review antihypertensive history, and assess for end-organ symptoms if values remain elevated.",
+                triggered_guideline_rule=(
+                    f"SBP >= {HYPERTENSION_STAGE2_SYSTOLIC} mmHg or DBP >= {HYPERTENSION_STAGE2_DIASTOLIC} mmHg"
+                ),
+                evidence={
+                    'blood_pressure_systolic': systolic,
+                    'blood_pressure_diastolic': diastolic,
+                },
+                explanation=(
+                    "Guideline inference triggered because "
+                    + " and ".join(values)
+                    + " meets the simplified hypertension-risk threshold."
+                ),
+                severity="high" if (not self._is_missing(systolic) and systolic >= HYPERTENSION_CRISIS_SYSTOLIC) or (not self._is_missing(diastolic) and diastolic >= HYPERTENSION_CRISIS_DIASTOLIC) else "moderate",
+            )
+
+        return None
+
+    def infer_diabetes_risk(self, patient_data: Dict) -> Optional[ClinicalInference]:
+        """Infer diabetes risk from elevated glucose using simplified screening thresholds."""
+        glucose = patient_data.get('glucose')
+        patient_id = patient_data.get('patient_id')
+
+        if self._is_missing(glucose):
+            return None
+
+        if glucose >= GLUCOSE_DIABETES_RISK:
+            severity = "high" if glucose >= GLUCOSE_HIGH_RISK else "moderate"
+            return ClinicalInference(
+                patient_id=patient_id,
+                diagnosis="Diabetes risk",
+                recommendation="Review timing of sample, repeat glucose or order confirmatory HbA1c testing, and assess for hyperglycemia symptoms.",
+                triggered_guideline_rule=f"Glucose >= {GLUCOSE_DIABETES_RISK} mmol/L",
+                evidence={'glucose': glucose},
+                explanation=(
+                    f"Guideline inference triggered because glucose is {glucose} mmol/L, "
+                    f"which exceeds the simplified diabetes-risk threshold of {GLUCOSE_DIABETES_RISK} mmol/L."
+                ),
+                severity=severity,
+            )
+
+        return None
+
+    def infer_heart_rate_spike(self, patient_data: Dict) -> Optional[ClinicalInference]:
+        """Flag tachycardic heart-rate spikes as a simple monitoring inference."""
+        heart_rate = patient_data.get('heart_rate')
+        patient_id = patient_data.get('patient_id')
+
+        if self._is_missing(heart_rate) or heart_rate < TACHYCARDIA_WARNING:
+            return None
+
+        severity = "high" if heart_rate >= TACHYCARDIA_CRITICAL else "moderate"
+        return ClinicalInference(
+            patient_id=patient_id,
+            diagnosis="Heart-rate spike flagged",
+            recommendation="Check waveform quality, repeat the reading, and assess for pain, fever, dehydration, or arrhythmia.",
+            triggered_guideline_rule=f"Heart rate >= {TACHYCARDIA_WARNING} bpm",
+            evidence={'heart_rate': heart_rate},
+            explanation=(
+                f"Flag triggered because heart rate reached {heart_rate} bpm, above the tachycardia surveillance threshold of {TACHYCARDIA_WARNING} bpm."
+            ),
+            severity=severity,
+        )
+
+    def infer_bp_drop(self, patient_data: Dict) -> Optional[ClinicalInference]:
+        """Flag low blood pressure as a simple hypotension-style drop signal."""
+        systolic = patient_data.get('blood_pressure_systolic')
+        diastolic = patient_data.get('blood_pressure_diastolic')
+        patient_id = patient_data.get('patient_id')
+
+        if self._is_missing(systolic) and self._is_missing(diastolic):
+            return None
+
+        if (
+            (not self._is_missing(systolic) and systolic < HYPOTENSION_WARNING_SYSTOLIC)
+            or (not self._is_missing(diastolic) and diastolic < HYPOTENSION_WARNING_DIASTOLIC)
+        ):
+            values = []
+            if not self._is_missing(systolic):
+                values.append(f"SBP {systolic} mmHg")
+            if not self._is_missing(diastolic):
+                values.append(f"DBP {diastolic} mmHg")
+            return ClinicalInference(
+                patient_id=patient_id,
+                diagnosis="Blood-pressure drop flagged",
+                recommendation="Repeat blood pressure promptly, check perfusion symptoms, and review fluid status or acute bleeding risk.",
+                triggered_guideline_rule=(
+                    f"SBP < {HYPOTENSION_WARNING_SYSTOLIC} mmHg or DBP < {HYPOTENSION_WARNING_DIASTOLIC} mmHg"
+                ),
+                evidence={
+                    'blood_pressure_systolic': systolic,
+                    'blood_pressure_diastolic': diastolic,
+                },
+                explanation=(
+                    "Flag triggered because "
+                    + " and ".join(values)
+                    + " falls below the simplified low-blood-pressure surveillance threshold."
+                ),
+                severity="high" if (not self._is_missing(systolic) and systolic < HYPOTENSION_CRITICAL_SYSTOLIC) or (not self._is_missing(diastolic) and diastolic < HYPOTENSION_CRITICAL_DIASTOLIC) else "moderate",
+            )
+
+        return None
     
     def evaluate_all_rules(self, patient_data: Dict) -> List[ClinicalAlert]:
         """
@@ -276,6 +414,59 @@ class ClinicalRulesEngine:
                 alerts.append(alert)
 
         return alerts
+
+    def evaluate_guideline_inferences(self, patient_data: Dict) -> List[ClinicalInference]:
+        """Evaluate simple explainable guideline-based inferences for a patient."""
+        inference_rules = [
+            self.infer_hypertension_risk,
+            self.infer_diabetes_risk,
+            self.infer_heart_rate_spike,
+            self.infer_bp_drop,
+        ]
+
+        inferences: List[ClinicalInference] = []
+        for rule in inference_rules:
+            inference = rule(patient_data)
+            if inference:
+                inferences.append(inference)
+
+        return inferences
+
+    @staticmethod
+    def summarize_inferences(inferences: List[ClinicalInference]) -> Dict:
+        """Summarize guideline-based inferences across patients."""
+        diagnosis_counts: Dict[str, int] = {}
+        patient_counts: Dict[str, set] = {}
+        rule_counts: Dict[str, int] = {}
+
+        for inference in inferences:
+            diagnosis_counts[inference.diagnosis] = diagnosis_counts.get(inference.diagnosis, 0) + 1
+            patient_counts.setdefault(inference.diagnosis, set()).add(str(inference.patient_id))
+            rule_counts[inference.triggered_guideline_rule] = rule_counts.get(inference.triggered_guideline_rule, 0) + 1
+
+        top_risks = []
+        for diagnosis, count in sorted(diagnosis_counts.items(), key=lambda item: item[1], reverse=True):
+            patient_count = len(patient_counts.get(diagnosis, set()))
+            summary_text = (
+                f"{diagnosis} in {patient_count} patients"
+                if diagnosis.lower().endswith('flagged')
+                else f"{diagnosis} detected in {patient_count} patients"
+            )
+            top_risks.append(
+                {
+                    'diagnosis': diagnosis,
+                    'inference_count': count,
+                    'patients_affected': patient_count,
+                    'summary_text': summary_text,
+                }
+            )
+
+        return {
+            'total_inferences': len(inferences),
+            'diagnosis_breakdown': diagnosis_counts,
+            'triggered_rule_breakdown': rule_counts,
+            'top_risks': top_risks,
+        }
     
     @staticmethod
     def get_alerts_summary(alerts: List[ClinicalAlert]) -> Dict:

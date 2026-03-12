@@ -107,14 +107,15 @@ class PatientDataSimulator:
             'blood_pressure_diastolic': np.random.randint(70, 90),
             'temperature': round(np.random.uniform(36.5, 37.5), 1),
             'respiratory_rate': np.random.randint(12, 20),
-            'oxygen_saturation': np.random.randint(95, 100)
+            'oxygen_saturation': np.random.randint(95, 100),
+            'glucose': round(np.random.uniform(4.2, 6.8), 1),
         }
         
         # Inject clinically significant anomalies.
         if np.random.random() < self.anomaly_rate:
             anomaly_type = np.random.choice([
                 'tachycardia', 'bradycardia', 'hypertension', 'hypotension',
-                'fever', 'hypothermia', 'hypoxemia', 'tachypnea'
+                'fever', 'hypothermia', 'hypoxemia', 'tachypnea', 'hyperglycemia'
             ])
             
             if anomaly_type == 'tachycardia':
@@ -151,6 +152,10 @@ class PatientDataSimulator:
                 # Respiratory rate > 30 (normal max is 30)
                 vital_signs['respiratory_rate'] = np.random.randint(32, 45)
 
+            elif anomaly_type == 'hyperglycemia':
+                # Glucose >= 7.0 mmol/L suggests diabetes risk in simplified screening logic
+                vital_signs['glucose'] = round(np.random.uniform(7.2, 13.5), 1)
+
         # Inject severe data errors that are likely sensor/data-entry problems.
         if np.random.random() < self.severe_error_rate:
             severe_error_type = np.random.choice([
@@ -159,6 +164,7 @@ class PatientDataSimulator:
                 'temperature_extreme',
                 'respiratory_extreme',
                 'spo2_extreme',
+                'glucose_extreme',
             ])
 
             if severe_error_type == 'heart_rate_extreme':
@@ -172,6 +178,8 @@ class PatientDataSimulator:
                 vital_signs['respiratory_rate'] = np.random.choice([2, 85])
             elif severe_error_type == 'spo2_extreme':
                 vital_signs['oxygen_saturation'] = np.random.choice([20, 45, 130])
+            elif severe_error_type == 'glucose_extreme':
+                vital_signs['glucose'] = float(np.random.choice([0.8, 28.0]))
         
         return vital_signs
 

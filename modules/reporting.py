@@ -48,6 +48,7 @@ class ClinicalReportGenerator:
         quality_report: Dict[str, Any],
         anomaly_report: Optional[Dict[str, Any]] = None,
         alert_report: Optional[Dict[str, Any]] = None,
+        inference_report: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Build concise action-oriented recommendations."""
         recommendations: List[str] = []
@@ -82,6 +83,21 @@ class ClinicalReportGenerator:
             if int(sev.get('critical', 0)) > 0:
                 recommendations.append(
                     "Escalate critical alerts immediately according to local clinical governance workflows."
+                )
+
+        if inference_report:
+            diagnosis_breakdown = inference_report.get('diagnosis_breakdown', {}) or {}
+            if int(diagnosis_breakdown.get('Hypertension risk', 0)) > 0:
+                recommendations.append(
+                    "Recheck elevated blood pressure readings and review patients flagged for hypertension risk."
+                )
+            if int(diagnosis_breakdown.get('Diabetes risk', 0)) > 0:
+                recommendations.append(
+                    "Arrange confirmatory glucose follow-up for patients flagged with diabetes risk."
+                )
+            if int(diagnosis_breakdown.get('Blood-pressure drop flagged', 0)) > 0:
+                recommendations.append(
+                    "Prioritize reassessment of patients with low blood pressure flags for possible instability."
                 )
 
         if not recommendations:
@@ -348,6 +364,35 @@ class ClinicalReportGenerator:
         if alerts:
             report['alerts'] = self.generate_alert_report(alerts)
 
+        try:
+            from modules.clinical_rules import ClinicalRulesEngine
+        except ModuleNotFoundError:
+            from clinical_rules import ClinicalRulesEngine
+
+        engine = ClinicalRulesEngine()
+        clinical_inferences = []
+        for _, row in df.iterrows():
+            clinical_inferences.extend(engine.evaluate_guideline_inferences(row.to_dict()))
+
+        report['clinical_inferences'] = {
+            'summary': engine.summarize_inferences(clinical_inferences),
+            'patient_level_inferences': [
+                {
+                    'patient_id': inference.patient_id,
+                    'diagnosis': inference.diagnosis,
+                    'recommendation': inference.recommendation,
+                    'triggered_guideline_rule': inference.triggered_guideline_rule,
+                    'evidence': {
+                        key: self._to_serializable(value)
+                        for key, value in inference.evidence.items()
+                    },
+                    'explanation': inference.explanation,
+                    'severity': inference.severity,
+                }
+                for inference in clinical_inferences
+            ],
+        }
+
         # Add anomaly summary if requested
         if include_anomalies:
             try:
@@ -360,6 +405,13 @@ class ClinicalReportGenerator:
 
         alert_report = report.get('alerts')
         anomaly_report = report.get('anomalies')
+        inference_report = (report.get('clinical_inferences', {}) or {}).get('summary', {})
+
+        potential_risks = [
+            item.get('summary_text')
+            for item in inference_report.get('top_risks', [])
+            if item.get('summary_text')
+        ]
 
         report['executive_summary'] = {
             'quality_grade': quality_report.get('quality_grade'),
@@ -375,11 +427,17 @@ class ClinicalReportGenerator:
                 (alert_report.get('severity_breakdown', {}) or {}).get('critical', 0)
                 if isinstance(alert_report, dict) else 0
             ),
+            'potential_clinical_risks': potential_risks,
+            'patients_with_inference_flags': sum(
+                item.get('patients_affected', 0)
+                for item in inference_report.get('top_risks', [])
+            ),
         }
         report['recommendations'] = self._build_recommendations(
             quality_report=quality_report,
             anomaly_report=anomaly_report if isinstance(anomaly_report, dict) else None,
             alert_report=alert_report if isinstance(alert_report, dict) else None,
+            inference_report=inference_report if isinstance(inference_report, dict) else None,
         )
         
         # Store in history

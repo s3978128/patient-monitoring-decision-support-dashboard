@@ -28,6 +28,7 @@ class DataQualityChecker:
         'temperature',
         'respiratory_rate',
         'oxygen_saturation',
+        'glucose',
     ]
 
     def check_missing_values(self, df: pd.DataFrame) -> Dict[str, float]:
